@@ -219,7 +219,7 @@ cd $(git rev-parse --show-toplevel) && pkill -f "node.*index.js"; (cd server && 
 
 ### IMPORTANT: Git Commit Policy
 
-**NEVER add Claude Code attribution or co-authored-by lines to commits**
+### NEVER add Claude Code attribution or co-authored-by lines to commits
 
 When push or pull requests are received, ask the user:
 
