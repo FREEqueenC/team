@@ -4,7 +4,6 @@
 
 use actix_web::{web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // Generic response structure for API endpoints
 #[derive(Serialize)]
@@ -26,8 +25,7 @@ pub struct ApiConfig {
 impl ApiConfig {
     // Create config for Cognito Forms
     pub fn cognito_forms() -> Self {
-        let api_key = std::env::var("COGNITO_FORMS_API")
-            .unwrap_or_else(|_| "".to_string());
+        let api_key = std::env::var("COGNITO_FORMS_API").unwrap_or_else(|_| "".to_string());
 
         let base_url = std::env::var("COGNITO_FORMS_BASE_URL")
             .unwrap_or_else(|_| "https://www.cognitoforms.com/api/forms".to_string());
@@ -37,7 +35,7 @@ impl ApiConfig {
             log::warn!("COGNITO_FORMS_API is empty or not set!");
         } else {
             let key_preview = if api_key.len() > 30 {
-                format!("{}...{}", &api_key[..20], &api_key[api_key.len()-10..])
+                format!("{}...{}", &api_key[..20], &api_key[api_key.len() - 10..])
             } else {
                 "[key too short]".to_string()
             };
@@ -46,21 +44,6 @@ impl ApiConfig {
 
         ApiConfig {
             service_name: "Cognito Forms".to_string(),
-            api_key,
-            base_url,
-        }
-    }
-
-    // Generic constructor for other API services
-    pub fn new(service_name: &str, api_key_env: &str, base_url_env: &str, default_url: &str) -> Self {
-        let api_key = std::env::var(api_key_env)
-            .unwrap_or_else(|_| "".to_string());
-
-        let base_url = std::env::var(base_url_env)
-            .unwrap_or_else(|_| default_url.to_string());
-
-        ApiConfig {
-            service_name: service_name.to_string(),
             api_key,
             base_url,
         }
@@ -161,7 +144,11 @@ async fn fetch_forms(config: &ApiConfig) -> Result<Vec<FormInfo>, String> {
         })?;
 
     if !response.status().is_success() {
-        let err_msg = format!("API returned error status: {} from URL: {}", response.status(), url);
+        let err_msg = format!(
+            "API returned error status: {} from URL: {}",
+            response.status(),
+            url
+        );
         log::error!("{}", err_msg);
         return Err(err_msg);
     }
@@ -175,7 +162,10 @@ async fn fetch_forms(config: &ApiConfig) -> Result<Vec<FormInfo>, String> {
 }
 
 // Helper function to fetch entries for a specific form
-async fn fetch_form_entries(config: &ApiConfig, form_id: &str) -> Result<Vec<serde_json::Value>, String> {
+async fn fetch_form_entries(
+    config: &ApiConfig,
+    form_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
     if config.api_key.is_empty() {
         return Err("API key not configured".to_string());
     }
@@ -202,9 +192,15 @@ async fn fetch_form_entries(config: &ApiConfig, form_id: &str) -> Result<Vec<ser
 
     if !status.is_success() {
         // Try to get the response body for more details
-        let body_text = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Could not read response body".to_string());
         log::error!("Error response body: {}", body_text);
-        let err_msg = format!("API returned error status: {} from URL: {}. Response: {}", status, url, body_text);
+        let err_msg = format!(
+            "API returned error status: {} from URL: {}. Response: {}",
+            status, url, body_text
+        );
         return Err(err_msg);
     }
 
@@ -245,7 +241,11 @@ async fn test_api_connection(config: &ApiConfig) -> Result<serde_json::Value, St
 
 // Core helper to fetch all entries from Cognito Forms by looping through entry IDs
 // Returns the raw entries vector for reuse in multiple endpoints
-async fn fetch_cognito_entries_core(config: &ApiConfig, base_url: &str, omit_fields: &[String]) -> Result<Vec<serde_json::Value>, String> {
+async fn fetch_cognito_entries_core(
+    config: &ApiConfig,
+    base_url: &str,
+    omit_fields: &[String],
+) -> Result<Vec<serde_json::Value>, String> {
     let client = reqwest::Client::new();
     let mut entries = Vec::new();
     let mut entry_id = 1;
@@ -275,13 +275,23 @@ async fn fetch_cognito_entries_core(config: &ApiConfig, base_url: &str, omit_fie
         }
 
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
-            log::warn!("Non-404 error at entry #{}: {} - {}", entry_id, status, body_text);
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Could not read response body".to_string());
+            log::warn!(
+                "Non-404 error at entry #{}: {} - {}",
+                entry_id,
+                status,
+                body_text
+            );
             break;
         }
 
         // Parse the entry
-        let mut entry: serde_json::Value = response.json().await
+        let mut entry: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| format!("Failed to parse entry #{}: {}", entry_id, e))?;
 
         // Remove specified fields
@@ -302,13 +312,16 @@ async fn fetch_cognito_entries_core(config: &ApiConfig, base_url: &str, omit_fie
 
 // Fetch all entries from a Cognito Forms endpoint by looping through entry IDs
 async fn fetch_all_entries(config: &ApiConfig, base_url: &str) -> Result<HttpResponse> {
-    let entries = fetch_cognito_entries_core(config, base_url, &[]).await.map_err(|e| {
-        actix_web::error::ErrorInternalServerError(e)
-    })?;
+    let entries = fetch_cognito_entries_core(config, base_url, &[])
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
 
     Ok(HttpResponse::Ok().json(ApiResponse {
         success: true,
-        message: Some(format!("Successfully fetched {} entries from Cognito Forms", entries.len())),
+        message: Some(format!(
+            "Successfully fetched {} entries from Cognito Forms",
+            entries.len()
+        )),
         error: None,
         data: Some(serde_json::json!(entries)),
     }))
@@ -322,12 +335,14 @@ pub async fn proxy_cognito_request(
     // Get the URL from query parameter
     let url = match params.get("url") {
         Some(u) => u,
-        None => return Ok(HttpResponse::BadRequest().json(ApiResponse {
-            success: false,
-            message: None,
-            error: Some("Missing 'url' query parameter".to_string()),
-            data: None,
-        })),
+        None => {
+            return Ok(HttpResponse::BadRequest().json(ApiResponse {
+                success: false,
+                message: None,
+                error: Some("Missing 'url' query parameter".to_string()),
+                data: None,
+            }))
+        }
     };
 
     // Verify it's a Cognito Forms URL for security
@@ -365,16 +380,25 @@ pub async fn proxy_cognito_request(
     log::info!("Response status: {}", status);
 
     if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Could not read response body".to_string());
         log::error!("Error response body: {}", body_text);
         let status_code = status.as_u16();
-        return Ok(HttpResponse::build(actix_web::http::StatusCode::from_u16(status_code).unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR))
-            .json(ApiResponse {
-                success: false,
-                message: None,
-                error: Some(format!("API returned error status: {} from URL: {}. Response: {}", status, url, body_text)),
-                data: None,
-            }));
+        return Ok(HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(status_code)
+                .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
+        )
+        .json(ApiResponse {
+            success: false,
+            message: None,
+            error: Some(format!(
+                "API returned error status: {} from URL: {}. Response: {}",
+                status, url, body_text
+            )),
+            data: None,
+        }));
     }
 
     // Get the response as JSON value
@@ -418,7 +442,7 @@ fn default_merge_column() -> String {
 
 // Helper function to normalize a path by resolving .. and . components
 fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
-    use std::path::{Component, PathBuf};
+    use std::path::Component;
 
     let mut components = Vec::new();
     for component in path.components() {
@@ -449,13 +473,12 @@ struct MergeData {
     fields: std::collections::HashMap<String, String>,
 }
 
-
 // Read merge source CSV and extract all fields dynamically
 // The merge_source_file path is relative to the jsonList's directory
 async fn read_merge_source_data(
     merge_source_file: &str,
     merge_column: &str,
-    json_list_dir: &std::path::Path
+    json_list_dir: &std::path::Path,
 ) -> std::collections::HashMap<String, MergeData> {
     use std::collections::HashMap;
 
@@ -471,7 +494,10 @@ async fn read_merge_source_data(
         normalize_path(&source_path).to_string_lossy().to_string()
     };
 
-    log::info!("Attempting to read merge source data from: {}", source_file_path);
+    log::info!(
+        "Attempting to read merge source data from: {}",
+        source_file_path
+    );
 
     // Try to read the merge source file
     match std::fs::read_to_string(&source_file_path) {
@@ -490,7 +516,9 @@ async fn read_merge_source_data(
             };
 
             // Find the merge column index (the key field - City, County, Country, etc.)
-            let key_idx = headers.iter().position(|h| h.eq_ignore_ascii_case(merge_column));
+            let key_idx = headers
+                .iter()
+                .position(|h| h.eq_ignore_ascii_case(merge_column));
 
             if key_idx.is_none() {
                 log::warn!("{} missing {} column", merge_source_file, merge_column);
@@ -515,86 +543,28 @@ async fn read_merge_source_data(
                                 }
                             }
 
-                            merge_data_map.insert(
-                                key_value.to_string(),
-                                MergeData { fields }
-                            );
+                            merge_data_map.insert(key_value.to_string(), MergeData { fields });
                         }
                     }
                 }
             }
 
-            log::info!("Read {} entries from {}", merge_data_map.len(), merge_source_file);
+            log::info!(
+                "Read {} entries from {}",
+                merge_data_map.len(),
+                merge_source_file
+            );
         }
         Err(e) => {
-            log::info!("Could not read {} ({}), will not populate extra columns", merge_source_file, e);
+            log::info!(
+                "Could not read {} ({}), will not populate extra columns",
+                merge_source_file,
+                e
+            );
         }
     }
 
     merge_data_map
-}
-
-// Read existing CSV and extract Latitude/Longitude values
-async fn read_existing_coordinates(local_file_path: &str, merge_column: &str) -> std::collections::HashMap<String, (String, String)> {
-    use std::collections::HashMap;
-
-    let mut coordinates = HashMap::new();
-
-    // Determine the absolute file path
-    let file_path = if local_file_path.starts_with('/') {
-        local_file_path.to_string()
-    } else {
-        let current_dir = std::env::current_dir().unwrap_or_default();
-        let json_list_dir = current_dir.join("projects/map");
-        let full_path = json_list_dir.join(local_file_path);
-        normalize_path(&full_path).to_string_lossy().to_string()
-    };
-
-    // Try to read the existing file
-    match std::fs::read_to_string(&file_path) {
-        Ok(contents) => {
-            let mut rdr = csv::ReaderBuilder::new()
-                .has_headers(true)
-                .from_reader(contents.as_bytes());
-
-            // Get headers to find merge column, Latitude, Longitude columns
-            let headers = match rdr.headers() {
-                Ok(h) => h.clone(),
-                Err(_) => return coordinates,
-            };
-
-            let location_idx = headers.iter().position(|h| h == merge_column);
-            let lat_idx = headers.iter().position(|h| h == "LATITUDE" || h == "Latitude" || h == "latitude");
-            let lon_idx = headers.iter().position(|h| h == "LONGITUDE" || h == "Longitude" || h == "longitude");
-
-            if location_idx.is_none() || lat_idx.is_none() || lon_idx.is_none() {
-                log::info!("CSV missing {}/Latitude/Longitude columns, no coordinates to preserve", merge_column);
-                return coordinates;
-            }
-
-            // Read each record and extract coordinates
-            for result in rdr.records() {
-                if let Ok(record) = result {
-                    if let (Some(location), Some(lat), Some(lon)) = (
-                        record.get(location_idx.unwrap()),
-                        record.get(lat_idx.unwrap()),
-                        record.get(lon_idx.unwrap()),
-                    ) {
-                        if !location.is_empty() && !lat.is_empty() && !lon.is_empty() {
-                            coordinates.insert(location.to_string(), (lat.to_string(), lon.to_string()));
-                        }
-                    }
-                }
-            }
-
-            log::info!("Read {} coordinate pairs from existing CSV", coordinates.len());
-        }
-        Err(e) => {
-            log::info!("Could not read existing CSV ({}), starting fresh", e);
-        }
-    }
-
-    coordinates
 }
 
 // Merge data from any source CSV into new entries (generic for cities, counties, countries, etc.)
@@ -616,9 +586,13 @@ fn merge_data(
                             // Only add if not already present in the entry
                             // Handle special case for Latitude/Longitude with case-insensitive check
                             let should_skip = if field_name.eq_ignore_ascii_case("latitude") {
-                                obj.contains_key("Latitude") || obj.contains_key("LATITUDE") || obj.contains_key("latitude")
+                                obj.contains_key("Latitude")
+                                    || obj.contains_key("LATITUDE")
+                                    || obj.contains_key("latitude")
                             } else if field_name.eq_ignore_ascii_case("longitude") {
-                                obj.contains_key("Longitude") || obj.contains_key("LONGITUDE") || obj.contains_key("longitude")
+                                obj.contains_key("Longitude")
+                                    || obj.contains_key("LONGITUDE")
+                                    || obj.contains_key("longitude")
                             } else {
                                 obj.contains_key(field_name)
                             };
@@ -626,10 +600,16 @@ fn merge_data(
                             if !should_skip {
                                 // Only insert if we have actual data (non-empty)
                                 if !field_value.is_empty() {
-                                    obj.insert(field_name.clone(), serde_json::Value::String(field_value.clone()));
+                                    obj.insert(
+                                        field_name.clone(),
+                                        serde_json::Value::String(field_value.clone()),
+                                    );
                                 } else {
                                     // Insert empty string to maintain column consistency
-                                    obj.insert(field_name.clone(), serde_json::Value::String("".to_string()));
+                                    obj.insert(
+                                        field_name.clone(),
+                                        serde_json::Value::String("".to_string()),
+                                    );
                                 }
                             }
                         }
@@ -638,15 +618,22 @@ fn merge_data(
                         for field_name in all_field_names {
                             // Handle special case for Latitude/Longitude with case-insensitive check
                             let should_skip = if field_name.eq_ignore_ascii_case("latitude") {
-                                obj.contains_key("Latitude") || obj.contains_key("LATITUDE") || obj.contains_key("latitude")
+                                obj.contains_key("Latitude")
+                                    || obj.contains_key("LATITUDE")
+                                    || obj.contains_key("latitude")
                             } else if field_name.eq_ignore_ascii_case("longitude") {
-                                obj.contains_key("Longitude") || obj.contains_key("LONGITUDE") || obj.contains_key("longitude")
+                                obj.contains_key("Longitude")
+                                    || obj.contains_key("LONGITUDE")
+                                    || obj.contains_key("longitude")
                             } else {
                                 obj.contains_key(field_name)
                             };
 
                             if !should_skip {
-                                obj.insert(field_name.clone(), serde_json::Value::String("".to_string()));
+                                obj.insert(
+                                    field_name.clone(),
+                                    serde_json::Value::String("".to_string()),
+                                );
                             }
                         }
                     }
@@ -666,22 +653,35 @@ pub async fn refresh_local_file(
     let api_url = &req.api_url;
     let local_file_path = &req.local_file_path;
 
-    log::info!("Refreshing local file {} with data from {}", local_file_path, api_url);
+    log::info!(
+        "Refreshing local file {} with data from {}",
+        local_file_path,
+        api_url
+    );
     log::info!("Using merge column: {}", req.merge_column);
 
     // Get the jsonList's directory (where config files and reference CSVs are located)
     let current_dir = std::env::current_dir().map_err(|e| {
-        actix_web::error::ErrorInternalServerError(format!("Failed to get current directory: {}", e))
+        actix_web::error::ErrorInternalServerError(format!(
+            "Failed to get current directory: {}",
+            e
+        ))
     })?;
     let json_list_dir = current_dir.join("projects/map");
 
     // Check if a merge source file is provided (from geoDataset in config)
-    let (merge_data_map, all_field_names) = if let Some(merge_source_file) = &req.merge_source_file {
+    let (merge_data_map, all_field_names) = if let Some(merge_source_file) = &req.merge_source_file
+    {
         log::info!("Using merge source file from config: {}", merge_source_file);
 
         // Read merge source data (cities.csv, counties.csv, countries.csv, etc.)
-        let merge_data_map = read_merge_source_data(merge_source_file, &req.merge_column, &json_list_dir).await;
-        log::info!("Loaded {} entries from {}", merge_data_map.len(), merge_source_file);
+        let merge_data_map =
+            read_merge_source_data(merge_source_file, &req.merge_column, &json_list_dir).await;
+        log::info!(
+            "Loaded {} entries from {}",
+            merge_data_map.len(),
+            merge_source_file
+        );
 
         // Extract all unique field names from the merge data for consistency
         let mut all_field_names = std::collections::HashSet::new();
@@ -691,7 +691,11 @@ pub async fn refresh_local_file(
             }
         }
         let all_field_names: Vec<String> = all_field_names.into_iter().collect();
-        log::info!("Found {} unique fields to merge: {:?}", all_field_names.len(), all_field_names);
+        log::info!(
+            "Found {} unique fields to merge: {:?}",
+            all_field_names.len(),
+            all_field_names
+        );
 
         (merge_data_map, all_field_names)
     } else {
@@ -700,12 +704,14 @@ pub async fn refresh_local_file(
     };
 
     // Check if this is a Cognito Forms URL that needs special handling
-    let entries = if api_url.starts_with("https://www.cognitoforms.com") && api_url.ends_with("/entries") {
+    let entries = if api_url.starts_with("https://www.cognitoforms.com")
+        && api_url.ends_with("/entries")
+    {
         // Use the shared core fetch logic for Cognito Forms bulk entries
         log::info!("Detected Cognito Forms bulk entries URL - using fetch_cognito_entries_core");
-        fetch_cognito_entries_core(&config, api_url, &req.omit_fields).await.map_err(|e| {
-            actix_web::error::ErrorInternalServerError(e)
-        })?
+        fetch_cognito_entries_core(&config, api_url, &req.omit_fields)
+            .await
+            .map_err(|e| actix_web::error::ErrorInternalServerError(e))?
     } else {
         // Regular API fetch
         let client = reqwest::Client::new();
@@ -722,7 +728,10 @@ pub async fn refresh_local_file(
 
         let status = response.status();
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_else(|_| "Could not read response body".to_string());
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Could not read response body".to_string());
             let err_msg = format!("API returned error status: {} - {}", status, body_text);
             log::error!("{}", err_msg);
             return Ok(HttpResponse::InternalServerError().json(ApiResponse {
@@ -770,13 +779,14 @@ pub async fn refresh_local_file(
     log::info!("Converting {} entries to CSV", entries.len());
 
     // Merge data from source file if a geoDataset is provided
-    let entries_with_merged_data = if req.merge_source_file.is_some() && !merge_data_map.is_empty() {
+    let entries_with_merged_data = if req.merge_source_file.is_some() && !merge_data_map.is_empty()
+    {
         log::info!("Merging data from geoDataset into entries");
         merge_data(
             entries.clone(),
             merge_data_map,
             &req.merge_column,
-            &all_field_names
+            &all_field_names,
         )
     } else {
         log::info!("No merge source or no merge data, using entries as-is");
@@ -813,13 +823,23 @@ pub async fn refresh_local_file(
         actix_web::error::ErrorInternalServerError(err_msg)
     })?;
 
-    log::info!("Successfully wrote {} entries to {}", entries.len(), file_path);
+    log::info!(
+        "Successfully wrote {} entries to {}",
+        entries.len(),
+        file_path
+    );
 
     Ok(HttpResponse::Ok().json(ApiResponse {
         success: true,
-        message: Some(format!("Successfully refreshed {} with {} entries", local_file_path, entries.len())),
+        message: Some(format!(
+            "Successfully refreshed {} with {} entries",
+            local_file_path,
+            entries.len()
+        )),
         error: None,
-        data: Some(serde_json::json!({ "entries_count": entries.len(), "file_path": local_file_path })),
+        data: Some(
+            serde_json::json!({ "entries_count": entries.len(), "file_path": local_file_path }),
+        ),
     }))
 }
 
@@ -847,30 +867,36 @@ fn json_to_csv(entries: &Vec<serde_json::Value>) -> Result<String, String> {
 
     // Build CSV rows
     for entry in entries {
-        let row: Vec<String> = keys.iter().map(|key| {
-            if let Some(obj) = entry.as_object() {
-                if let Some(value) = obj.get(key) {
-                    // Convert value to string and escape quotes
-                    let value_str = match value {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Number(n) => n.to_string(),
-                        serde_json::Value::Bool(b) => b.to_string(),
-                        serde_json::Value::Null => String::new(),
-                        _ => serde_json::to_string(value).unwrap_or_default(),
-                    };
-                    // Escape quotes and wrap in quotes if contains comma, quote, or newline
-                    if value_str.contains(',') || value_str.contains('"') || value_str.contains('\n') {
-                        format!("\"{}\"", value_str.replace('"', "\"\""))
+        let row: Vec<String> = keys
+            .iter()
+            .map(|key| {
+                if let Some(obj) = entry.as_object() {
+                    if let Some(value) = obj.get(key) {
+                        // Convert value to string and escape quotes
+                        let value_str = match value {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Null => String::new(),
+                            _ => serde_json::to_string(value).unwrap_or_default(),
+                        };
+                        // Escape quotes and wrap in quotes if contains comma, quote, or newline
+                        if value_str.contains(',')
+                            || value_str.contains('"')
+                            || value_str.contains('\n')
+                        {
+                            format!("\"{}\"", value_str.replace('"', "\"\""))
+                        } else {
+                            value_str
+                        }
                     } else {
-                        value_str
+                        String::new()
                     }
                 } else {
                     String::new()
                 }
-            } else {
-                String::new()
-            }
-        }).collect();
+            })
+            .collect();
         csv.push_str(&row.join(","));
         csv.push('\n');
     }
@@ -886,20 +912,25 @@ pub struct SaveDatasetRequest {
 }
 
 // Save dataset to CSV file
-pub async fn save_dataset(
-    req: web::Json<SaveDatasetRequest>,
-) -> Result<HttpResponse> {
+pub async fn save_dataset(req: web::Json<SaveDatasetRequest>) -> Result<HttpResponse> {
     let file_path = &req.file_path;
     let data = &req.data;
 
-    log::info!("Saving dataset with {} entries to {}", data.len(), file_path);
+    log::info!(
+        "Saving dataset with {} entries to {}",
+        data.len(),
+        file_path
+    );
 
     // Determine the absolute file path
     let absolute_path = if file_path.starts_with('/') {
         file_path.clone()
     } else {
         let current_dir = std::env::current_dir().map_err(|e| {
-            actix_web::error::ErrorInternalServerError(format!("Failed to get current directory: {}", e))
+            actix_web::error::ErrorInternalServerError(format!(
+                "Failed to get current directory: {}",
+                e
+            ))
         })?;
         let json_list_dir = current_dir.join("projects/map");
         let full_path = json_list_dir.join(file_path);
@@ -920,7 +951,11 @@ pub async fn save_dataset(
         actix_web::error::ErrorInternalServerError(err_msg)
     })?;
 
-    log::info!("Successfully saved {} entries to {}", data.len(), absolute_path);
+    log::info!(
+        "Successfully saved {} entries to {}",
+        data.len(),
+        absolute_path
+    );
 
     Ok(HttpResponse::Ok().json(ApiResponse {
         success: true,
@@ -928,16 +963,4 @@ pub async fn save_dataset(
         error: None,
         data: Some(serde_json::json!({ "entries_count": data.len(), "file_path": file_path })),
     }))
-}
-
-// Configure routes for external API integration
-// Routes are generic and work with any API service configured
-pub fn configure_cognito_routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/cognito")
-            .route("/test", web::get().to(test_connection))
-            .route("/forms", web::get().to(list_forms))
-            .route("/forms/{form_id}/entries", web::get().to(get_form_entries))
-            .route("/proxy", web::get().to(proxy_cognito_request))  // Generic proxy endpoint
-    );
 }

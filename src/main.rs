@@ -1,21 +1,21 @@
 // src/main.rs
 use actix_cors::Cors;
-use actix_web::{web, App, HttpResponse, HttpServer, Result, middleware, HttpRequest};
+use actix_web::{middleware, web, App, HttpRequest, HttpResponse, HttpServer, Result};
 use anyhow::Context;
-use chrono::{Utc, NaiveDate};
+use chrono::{NaiveDate, Utc};
 use clap::{Parser, Subcommand};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row, Column, ValueRef};
-use std::sync::{Arc, Mutex};
+use sqlx::{postgres::PgPoolOptions, Column, Pool, Postgres, Row, ValueRef};
 use std::collections::HashMap;
-use std::process::{Child, Command};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::Path;
-use uuid::Uuid;
-use url::Url;
-use notify::{Watcher, RecursiveMode, RecommendedWatcher, Config as NotifyConfig};
+use std::process::{Child, Command};
 use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use url::Url;
+use uuid::Uuid;
 
 // Google Sheets API imports (TODO: Fix version conflicts)
 // use google_sheets4::{Sheets, api::ValueRange};
@@ -23,17 +23,17 @@ use std::sync::mpsc::channel;
 // use hyper::Client;
 // use hyper_rustls::HttpsConnectorBuilder;
 
-mod import;
-mod gemini_insights;
+mod api_integration;
 mod claude_insights;
-mod unified_insights;
-mod recommendations;
+mod gemini_insights;
+mod import;
 mod oauth;
 mod prompts;
+mod recommendations;
 mod semantic_search;
-mod api_integration;
+mod unified_insights;
+use oauth::{OAuthConfig, OAuthUrlResponse, UserSession};
 use recommendations::RecommendationRequest;
-use oauth::{OAuthConfig, UserSession, OAuthUrlResponse};
 
 // Configuration structure
 #[derive(Debug, Deserialize, Clone)]
@@ -53,14 +53,14 @@ impl Config {
     fn from_env() -> anyhow::Result<Self> {
         // Try to load from .env file in docker directory
         dotenv::from_path("../docker/.env").ok();
-        
+
         // Also check for a config.toml file
         if let Ok(config_str) = std::fs::read_to_string("config.toml") {
             toml::from_str(&config_str).context("Failed to parse config.toml")
         } else {
             // Fall back to environment variables
             let database_url = Self::build_database_url();
-            
+
             Ok(Config {
                 database_url,
                 gemini_api_key: std::env::var("GEMINI_API_KEY")
@@ -77,7 +77,7 @@ impl Config {
             })
         }
     }
-    
+
     fn reload() -> anyhow::Result<Self> {
         log::info!("Reloading configuration from .env file");
 
@@ -88,7 +88,7 @@ impl Config {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                
+
                 if let Some((key, value)) = line.split_once('=') {
                     let key = key.trim();
                     let value = value.trim();
@@ -96,10 +96,10 @@ impl Config {
                 }
             }
         }
-        
+
         Self::from_env()
     }
-    
+
     fn build_database_url() -> String {
         // First, try COMMONS component variables (more secure)
         if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(password)) = (
@@ -107,16 +107,17 @@ impl Config {
             std::env::var("COMMONS_PORT"),
             std::env::var("COMMONS_NAME"),
             std::env::var("COMMONS_USER"),
-            std::env::var("COMMONS_PASSWORD")
+            std::env::var("COMMONS_PASSWORD"),
         ) {
-            let ssl_mode = std::env::var("COMMONS_SSL_MODE").unwrap_or_else(|_| "require".to_string());
+            let ssl_mode =
+                std::env::var("COMMONS_SSL_MODE").unwrap_or_else(|_| "require".to_string());
             format!("postgres://{user}:{password}@{host}:{port}/{name}?sslmode={ssl_mode}")
         } else if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(password)) = (
             std::env::var("DB_HOST"),
             std::env::var("DB_PORT"),
             std::env::var("DB_NAME"),
             std::env::var("DB_USER"),
-            std::env::var("DB_PASSWORD")
+            std::env::var("DB_PASSWORD"),
         ) {
             // Fall back to generic DB_ variables
             let ssl_mode = std::env::var("DB_SSL_MODE").unwrap_or_else(|_| "require".to_string());
@@ -146,7 +147,7 @@ impl ClaudeSession {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-            
+
         ClaudeSession {
             process: None,
             session_start: start_time,
@@ -156,11 +157,11 @@ impl ClaudeSession {
             last_usage: None,
         }
     }
-    
+
     fn is_active(&self) -> bool {
         self.process.is_some()
     }
-    
+
     fn get_session_duration(&self) -> u64 {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -198,16 +199,16 @@ struct ApiState {
 // Function to start watching .env file for changes
 fn start_env_watcher(config: SharedConfig) -> anyhow::Result<()> {
     use notify::{Event, EventKind};
-    
+
     let (tx, rx) = channel();
     let mut watcher = RecommendedWatcher::new(tx, NotifyConfig::default())?;
-    
+
     // Watch the .env file in docker directory
     let env_path = Path::new("../docker/.env");
     if env_path.exists() {
         watcher.watch(env_path, RecursiveMode::NonRecursive)?;
         log::info!("Started watching .env file for changes");
-        
+
         // Spawn a background thread to handle file change events
         let config_clone = config.clone();
         tokio::spawn(async move {
@@ -215,21 +216,34 @@ fn start_env_watcher(config: SharedConfig) -> anyhow::Result<()> {
                 match rx.recv() {
                     Ok(event) => {
                         match event {
-                            Ok(Event { kind: EventKind::Modify(_), paths, .. }) |
-                            Ok(Event { kind: EventKind::Create(_), paths, .. }) => {
-                                if paths.iter().any(|path| path.file_name() == Some(std::ffi::OsStr::new(".env"))) {
+                            Ok(Event {
+                                kind: EventKind::Modify(_),
+                                paths,
+                                ..
+                            })
+                            | Ok(Event {
+                                kind: EventKind::Create(_),
+                                paths,
+                                ..
+                            }) => {
+                                if paths.iter().any(|path| {
+                                    path.file_name() == Some(std::ffi::OsStr::new(".env"))
+                                }) {
                                     log::info!(".env file changed, reloading configuration...");
-                                    
+
                                     // Add a small delay to ensure file write is complete
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                    
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100))
+                                        .await;
+
                                     match Config::reload() {
                                         Ok(new_config) => {
                                             if let Ok(mut config_guard) = config_clone.lock() {
                                                 *config_guard = new_config;
                                                 log::info!("Configuration reloaded successfully");
                                             } else {
-                                                log::error!("Failed to acquire config lock for reload");
+                                                log::error!(
+                                                    "Failed to acquire config lock for reload"
+                                                );
                                             }
                                         }
                                         Err(e) => {
@@ -238,8 +252,14 @@ fn start_env_watcher(config: SharedConfig) -> anyhow::Result<()> {
                                     }
                                 }
                             }
-                            Ok(Event { kind: EventKind::Remove(_), paths, .. }) => {
-                                if paths.iter().any(|path| path.file_name() == Some(std::ffi::OsStr::new(".env"))) {
+                            Ok(Event {
+                                kind: EventKind::Remove(_),
+                                paths,
+                                ..
+                            }) => {
+                                if paths.iter().any(|path| {
+                                    path.file_name() == Some(std::ffi::OsStr::new(".env"))
+                                }) {
                                     log::warn!(".env file was removed");
                                 }
                             }
@@ -253,13 +273,13 @@ fn start_env_watcher(config: SharedConfig) -> anyhow::Result<()> {
                 }
             }
         });
-        
+
         // Keep the watcher alive by storing it
         std::mem::forget(watcher);
     } else {
         log::warn!("No .env file found to watch");
     }
-    
+
     Ok(())
 }
 
@@ -287,15 +307,6 @@ struct CreateGoogleProjectRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct GoogleAuthRequest {
     credential: String,
-}
-
-// Google OAuth verification response
-#[derive(Debug, Serialize, Deserialize)]
-struct GoogleAuthResponse {
-    success: bool,
-    name: String,
-    email: String,
-    picture: Option<String>,
 }
 
 // Google Sheets member data request
@@ -326,13 +337,6 @@ struct GoogleCloudProjectParent {
     #[serde(rename = "type")]
     parent_type: Option<String>,
     id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct GoogleCloudProjectsResponse {
-    projects: Option<Vec<GoogleCloudProject>>,
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -437,24 +441,22 @@ async fn get_github_token() -> Result<HttpResponse> {
 // Health check endpoint
 async fn health_check(data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
     match &data.db {
-        Some(db) => {
-            match sqlx::query("SELECT 1").fetch_one(db).await {
-                Ok(_) => Ok(HttpResponse::Ok().json(json!({
-                    "status": "healthy",
-                    "database_connected": true
-                }))),
-                Err(e) => Ok(HttpResponse::Ok().json(json!({
-                    "status": "unhealthy",
-                    "database_connected": false,
-                    "error": e.to_string()
-                }))),
-            }
-        }
+        Some(db) => match sqlx::query("SELECT 1").fetch_one(db).await {
+            Ok(_) => Ok(HttpResponse::Ok().json(json!({
+                "status": "healthy",
+                "database_connected": true
+            }))),
+            Err(e) => Ok(HttpResponse::Ok().json(json!({
+                "status": "unhealthy",
+                "database_connected": false,
+                "error": e.to_string()
+            }))),
+        },
         None => Ok(HttpResponse::Ok().json(json!({
             "status": "healthy",
             "database_connected": false,
             "message": "Server running without database connection"
-        })))
+        }))),
     }
 }
 
@@ -467,7 +469,7 @@ async fn get_current_config(data: web::Data<Arc<ApiState>>) -> Result<HttpRespon
         "site_favicon": config_guard.site_favicon,
         "gemini_api_key_present": !config_guard.gemini_api_key.is_empty() && config_guard.gemini_api_key != "dummy_key"
     });
-    
+
     Ok(HttpResponse::Ok().json(config_json))
 }
 
@@ -475,7 +477,7 @@ async fn get_current_config(data: web::Data<Arc<ApiState>>) -> Result<HttpRespon
 async fn get_env_config() -> Result<HttpResponse> {
     let mut database_config = None;
     let mut database_connections = Vec::new();
-    
+
     // Helper function to build config from components
     let build_config_from_components = |prefix: &str| -> Option<(String, EnvDatabaseConfig)> {
         let host_key = format!("{prefix}_HOST");
@@ -484,18 +486,18 @@ async fn get_env_config() -> Result<HttpResponse> {
         let user_key = format!("{prefix}_USER");
         let password_key = format!("{prefix}_PASSWORD");
         let ssl_key = format!("{prefix}_SSL_MODE");
-        
+
         if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(_password)) = (
             std::env::var(&host_key),
             std::env::var(&port_key),
             std::env::var(&name_key),
             std::env::var(&user_key),
-            std::env::var(&password_key)
+            std::env::var(&password_key),
         ) {
             let ssl_mode = std::env::var(&ssl_key).unwrap_or_else(|_| "require".to_string());
             let port_num: u16 = port.parse().unwrap_or(5432);
             let ssl = ssl_mode == "require";
-            
+
             let config = EnvDatabaseConfig {
                 server: format!("{host}:{port_num}"),
                 database: name.clone(),
@@ -503,20 +505,20 @@ async fn get_env_config() -> Result<HttpResponse> {
                 port: port_num,
                 ssl,
             };
-            
+
             let display_name = match prefix {
                 "COMMONS" => "MemberCommons Database (Default)".to_string(),
                 "EXIOBASE" => "ModelEarth Industry Database".to_string(),
                 "LOCATIONS" => "Locations Database".to_string(),
                 _ => format!("{} Database", prefix.replace('_', " ")),
             };
-            
+
             Some((display_name, config))
         } else {
             None
         }
     };
-    
+
     // Check for component-based configurations first
     let component_prefixes = ["COMMONS", "EXIOBASE", "LOCATIONS", "DB"];
     for prefix in component_prefixes.iter() {
@@ -525,7 +527,7 @@ async fn get_env_config() -> Result<HttpResponse> {
             if *prefix == "COMMONS" {
                 database_config = Some(config.clone());
             }
-            
+
             database_connections.push(DatabaseConnection {
                 name: prefix.to_string(),
                 display_name,
@@ -533,19 +535,20 @@ async fn get_env_config() -> Result<HttpResponse> {
             });
         }
     }
-    
+
     // Scan for all database URLs in environment variables (legacy support)
     for (key, value) in std::env::vars() {
         if key.ends_with("_URL") && value.starts_with("postgres://") {
             if let Ok(url) = Url::parse(&value) {
-                let server = format!("{}:{}", 
-                    url.host_str().unwrap_or("unknown"), 
+                let server = format!(
+                    "{}:{}",
+                    url.host_str().unwrap_or("unknown"),
                     url.port().unwrap_or(5432)
                 );
                 let database = url.path().trim_start_matches('/').to_string();
                 let username = url.username().to_string();
                 let ssl = value.contains("sslmode=require");
-                
+
                 let config = EnvDatabaseConfig {
                     server,
                     database,
@@ -553,31 +556,37 @@ async fn get_env_config() -> Result<HttpResponse> {
                     port: url.port().unwrap_or(5432),
                     ssl,
                 };
-                
+
                 // Set the default database (DATABASE_URL) as the main config
                 if key == "DATABASE_URL" {
                     database_config = Some(config.clone());
                 }
-                
+
                 // Add to connections list with display name
                 let display_name = match key.as_str() {
                     "DATABASE_URL" => "MemberCommons Database (Default)".to_string(),
                     "EXIOBASE_URL" => "ModelEarth Industry Database".to_string(),
                     _ => {
                         let name = key.replace("_URL", "").replace("_", " ");
-                        format!("{} Database", name.split_whitespace()
-                            .map(|word| {
-                                let mut chars = word.chars();
-                                match chars.next() {
-                                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                                    None => String::new(),
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" "))
+                        format!(
+                            "{} Database",
+                            name.split_whitespace()
+                                .map(|word| {
+                                    let mut chars = word.chars();
+                                    match chars.next() {
+                                        Some(first) => {
+                                            first.to_uppercase().collect::<String>()
+                                                + chars.as_str()
+                                        }
+                                        None => String::new(),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        )
                     }
                 };
-                
+
                 database_connections.push(DatabaseConnection {
                     name: key,
                     display_name,
@@ -586,21 +595,21 @@ async fn get_env_config() -> Result<HttpResponse> {
             }
         }
     }
-    
+
     // Check if Gemini API key is present and valid (but don't expose the actual key)
     let gemini_api_key_present = if let Ok(key) = std::env::var("GEMINI_API_KEY") {
         !key.is_empty() && key != "dummy_key" && key != "get-key-at-aistudio.google.com"
     } else {
         false
     };
-    
+
     // Get Google configuration values
     let google_project_id = std::env::var("GOOGLE_PROJECT_ID").ok();
     let google_user_email = std::env::var("GOOGLE_USER_EMAIL").ok();
     let google_org_id = std::env::var("GOOGLE_ORG_ID").ok();
     let google_billing_id = std::env::var("GOOGLE_BILLING_ID").ok();
     let google_service_key = std::env::var("GOOGLE_SERVICE_KEY").ok();
-    
+
     Ok(HttpResponse::Ok().json(EnvConfigResponse {
         database: database_config,
         database_connections,
@@ -616,14 +625,14 @@ async fn get_env_config() -> Result<HttpResponse> {
 // Restart server endpoint (for development)
 async fn restart_server() -> Result<HttpResponse> {
     // In a production environment, you might want to add authentication here
-    
+
     // For development, just exit and let the user restart manually
     // This is safer and more reliable than trying to auto-restart
     tokio::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         std::process::exit(0); // Clean exit
     });
-    
+
     Ok(HttpResponse::Ok().json(json!({
         "message": "Server shutdown initiated. Please restart manually with 'cargo run serve'",
         "status": "success"
@@ -646,13 +655,16 @@ async fn save_env_config(req: web::Json<SaveEnvConfigRequest>) -> Result<HttpRes
             env_lines.push(line);
         }
     }
-    
+
     // Helper function to update or add environment variable
-    let update_env_var = |env_lines: &mut Vec<String>, updated_keys: &mut std::collections::HashSet<String>, key: &str, value: &Option<String>| {
+    let update_env_var = |env_lines: &mut Vec<String>,
+                          updated_keys: &mut std::collections::HashSet<String>,
+                          key: &str,
+                          value: &Option<String>| {
         if let Some(val) = value {
             if !val.is_empty() {
                 let new_line = format!("{key}={val}");
-                
+
                 // Find and update existing key, or mark for addition
                 let mut found = false;
                 for line in env_lines.iter_mut() {
@@ -660,17 +672,18 @@ async fn save_env_config(req: web::Json<SaveEnvConfigRequest>) -> Result<HttpRes
                     if line.trim().is_empty() || line.trim().starts_with('#') {
                         continue;
                     }
-                    
+
                     // Check if line starts with the key followed by = (with optional whitespace)
                     let line_trimmed = line.trim();
-                    if line_trimmed.starts_with(&format!("{key}=")) || 
-                       line_trimmed.starts_with(&format!("{key} =")) {
+                    if line_trimmed.starts_with(&format!("{key}="))
+                        || line_trimmed.starts_with(&format!("{key} ="))
+                    {
                         *line = new_line.clone();
                         found = true;
                         break;
                     }
                 }
-                
+
                 if !found {
                     env_lines.push(new_line);
                 }
@@ -678,15 +691,45 @@ async fn save_env_config(req: web::Json<SaveEnvConfigRequest>) -> Result<HttpRes
             }
         }
     };
-    
+
     // Update or add new values
-    update_env_var(&mut env_lines, &mut updated_keys, "GEMINI_API_KEY", &req.gemini_api_key);
-    update_env_var(&mut env_lines, &mut updated_keys, "GOOGLE_PROJECT_ID", &req.google_project_id);
-    update_env_var(&mut env_lines, &mut updated_keys, "GOOGLE_USER_EMAIL", &req.google_user_email);
-    update_env_var(&mut env_lines, &mut updated_keys, "GOOGLE_ORG_ID", &req.google_org_id);
-    update_env_var(&mut env_lines, &mut updated_keys, "GOOGLE_BILLING_ID", &req.google_billing_id);
-    update_env_var(&mut env_lines, &mut updated_keys, "GOOGLE_SERVICE_KEY", &req.google_service_key);
-    
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GEMINI_API_KEY",
+        &req.gemini_api_key,
+    );
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GOOGLE_PROJECT_ID",
+        &req.google_project_id,
+    );
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GOOGLE_USER_EMAIL",
+        &req.google_user_email,
+    );
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GOOGLE_ORG_ID",
+        &req.google_org_id,
+    );
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GOOGLE_BILLING_ID",
+        &req.google_billing_id,
+    );
+    update_env_var(
+        &mut env_lines,
+        &mut updated_keys,
+        "GOOGLE_SERVICE_KEY",
+        &req.google_service_key,
+    );
+
     // Write back to .env file
     match OpenOptions::new()
         .write(true)
@@ -697,10 +740,12 @@ async fn save_env_config(req: web::Json<SaveEnvConfigRequest>) -> Result<HttpRes
         Ok(mut file) => {
             for line in env_lines {
                 writeln!(file, "{line}").map_err(|e| {
-                    actix_web::error::ErrorInternalServerError(format!("Failed to write to .env file: {e}"))
+                    actix_web::error::ErrorInternalServerError(format!(
+                        "Failed to write to .env file: {e}"
+                    ))
                 })?;
             }
-            
+
             // Update environment variables in current process
             let set_env_var = |key: &str, value: &Option<String>| {
                 if let Some(val) = value {
@@ -709,26 +754,24 @@ async fn save_env_config(req: web::Json<SaveEnvConfigRequest>) -> Result<HttpRes
                     }
                 }
             };
-            
+
             set_env_var("GEMINI_API_KEY", &req.gemini_api_key);
             set_env_var("GOOGLE_PROJECT_ID", &req.google_project_id);
             set_env_var("GOOGLE_USER_EMAIL", &req.google_user_email);
             set_env_var("GOOGLE_ORG_ID", &req.google_org_id);
             set_env_var("GOOGLE_BILLING_ID", &req.google_billing_id);
             set_env_var("GOOGLE_SERVICE_KEY", &req.google_service_key);
-            
+
             Ok(HttpResponse::Ok().json(json!({
                 "success": true,
                 "message": "Configuration saved to .env file",
                 "updated_keys": updated_keys.into_iter().collect::<Vec<_>>()
             })))
         }
-        Err(e) => {
-            Ok(HttpResponse::InternalServerError().json(json!({
-                "success": false,
-                "error": format!("Failed to write .env file: {e}")
-            })))
-        }
+        Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Failed to write .env file: {e}")
+        }))),
     }
 }
 
@@ -746,18 +789,14 @@ async fn create_env_config(req: web::Json<CreateEnvConfigRequest>) -> Result<Htt
 
     // Write the content to .env file in docker directory
     match fs::write("../docker/.env", &req.content) {
-        Ok(_) => {
-            Ok(HttpResponse::Ok().json(json!({
-                "success": true,
-                "message": ".env file created successfully from .env.example template"
-            })))
-        }
-        Err(e) => {
-            Ok(HttpResponse::InternalServerError().json(json!({
-                "success": false,
-                "error": format!("Failed to create .env file: {e}")
-            })))
-        }
+        Ok(_) => Ok(HttpResponse::Ok().json(json!({
+            "success": true,
+            "message": ".env file created successfully from .env.example template"
+        }))),
+        Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+            "success": false,
+            "error": format!("Failed to create .env file: {e}")
+        }))),
     }
 }
 
@@ -765,7 +804,7 @@ async fn create_env_config(req: web::Json<CreateEnvConfigRequest>) -> Result<Htt
 async fn save_csv_file(req: web::Json<SaveCsvRequest>) -> Result<HttpResponse> {
     use std::fs;
     use std::path::Path;
-    
+
     // Validate filename - only allow lists.csv for security
     if req.filename != "lists.csv" {
         return Ok(HttpResponse::BadRequest().json(json!({
@@ -773,10 +812,10 @@ async fn save_csv_file(req: web::Json<SaveCsvRequest>) -> Result<HttpResponse> {
             "error": "Invalid filename: only lists.csv is allowed"
         })));
     }
-    
+
     // Use existing projects directory
     let projects_dir = Path::new("projects");
-    
+
     // Write CSV content to file
     let file_path = projects_dir.join(&req.filename);
     match fs::write(&file_path, &req.content) {
@@ -810,21 +849,21 @@ async fn create_google_project(req: web::Json<CreateGoogleProjectRequest>) -> Re
             "error": "Project ID is required"
         })));
     }
-    
+
     if req.user_email.is_empty() {
         return Ok(HttpResponse::BadRequest().json(json!({
             "success": false,
             "error": "User email is required"
         })));
     }
-    
+
     if req.service_key.is_empty() {
         return Ok(HttpResponse::BadRequest().json(json!({
             "success": false,
             "error": "Service account key is required for API access"
         })));
     }
-    
+
     // Validate service key is valid JSON
     if let Err(_) = serde_json::from_str::<serde_json::Value>(&req.service_key) {
         return Ok(HttpResponse::BadRequest().json(json!({
@@ -851,7 +890,7 @@ async fn create_google_project(req: web::Json<CreateGoogleProjectRequest>) -> Re
             }
         })));
     }
-    
+
     // For now, return a placeholder response indicating the feature is not fully implemented
     // In a real implementation, this would:
     // 1. Parse the service account key
@@ -859,7 +898,7 @@ async fn create_google_project(req: web::Json<CreateGoogleProjectRequest>) -> Re
     // 3. Create the project using the Google Cloud API
     // 4. Set up billing if billing_id is provided
     // 5. Add the user email to the project IAM
-    
+
     Ok(HttpResponse::Ok().json(json!({
         "success": false,
         "error": "Google Cloud Project API integration is not yet implemented. Please use the manual method for now.",
@@ -884,11 +923,9 @@ async fn create_google_project(req: web::Json<CreateGoogleProjectRequest>) -> Re
 // Multi-Provider OAuth Authentication Handlers
 // Supports Google, GitHub, LinkedIn, Microsoft, and Facebook
 
-async fn oauth_provider_url(
-    provider: web::Path<String>,
-) -> Result<HttpResponse> {
+async fn oauth_provider_url(provider: web::Path<String>) -> Result<HttpResponse> {
     let provider_name = provider.into_inner();
-    
+
     // Load OAuth configuration
     let oauth_config = match OAuthConfig::load() {
         Ok(config) => config,
@@ -899,7 +936,7 @@ async fn oauth_provider_url(
             })));
         }
     };
-    
+
     // Get provider configuration
     let provider_config = match oauth_config.get_provider(&provider_name) {
         Some(config) => config,
@@ -910,7 +947,7 @@ async fn oauth_provider_url(
             })));
         }
     };
-    
+
     // Handle demo provider specially
     if provider_name == "demo" {
         return Ok(HttpResponse::Ok().json(json!({
@@ -918,9 +955,11 @@ async fn oauth_provider_url(
             "state": "demo_state"
         })));
     }
-    
+
     // Check if provider credentials are configured
-    if provider_config.client_id.contains("your-") || provider_config.client_secret.contains("your-") {
+    if provider_config.client_id.contains("your-")
+        || provider_config.client_secret.contains("your-")
+    {
         return Ok(HttpResponse::ServiceUnavailable().json(json!({
             "error": "Provider not configured",
             "message": format!("{} OAuth credentials not configured", provider_config.name),
@@ -928,12 +967,12 @@ async fn oauth_provider_url(
                 provider_name.to_uppercase(), provider_name.to_uppercase())
         })));
     }
-    
+
     // Generate OAuth URL (simplified implementation)
     let redirect_uri = oauth_config.get_redirect_uri(&provider_name);
     let state = uuid::Uuid::new_v4().to_string();
     let scopes = provider_config.scopes.join(" ");
-    
+
     let auth_url = format!(
         "{}?client_id={}&redirect_uri={}&response_type={}&scope={}&state={}",
         provider_config.authorization_endpoint,
@@ -943,11 +982,8 @@ async fn oauth_provider_url(
         urlencoding::encode(&scopes),
         state
     );
-    
-    Ok(HttpResponse::Ok().json(OAuthUrlResponse {
-        auth_url,
-        state,
-    }))
+
+    Ok(HttpResponse::Ok().json(OAuthUrlResponse { auth_url, state }))
 }
 
 async fn oauth_provider_callback(
@@ -959,29 +995,35 @@ async fn oauth_provider_callback(
         Some(code) => code,
         None => {
             return Ok(HttpResponse::Found()
-                .append_header(("Location", "http://localhost:8887/team?auth=error&message=no_code"))
+                .append_header((
+                    "Location",
+                    "http://localhost:8887/team?auth=error&message=no_code",
+                ))
                 .finish());
         }
     };
-    
+
     // For now, create a demo user session for any successful OAuth callback
     // In production, this would exchange the code for a token and fetch user info
-    let user_session = UserSession::new(
+    let _user_session = UserSession::new(
         format!("{}_user_{}", provider_name, &code[..8]),
         format!("user@{}.com", provider_name),
         format!("{} User", provider_name.to_uppercase()),
         None,
         provider_name,
     );
-    
+
     // In a real implementation, you would:
     // 1. Exchange authorization code for access token
     // 2. Fetch user information from provider
     // 3. Store/update user in database
     // 4. Create session
-    
+
     Ok(HttpResponse::Found()
-        .append_header(("Location", "http://localhost:8887/team?auth=success#account/preferences"))
+        .append_header((
+            "Location",
+            "http://localhost:8887/team?auth=success#account/preferences",
+        ))
         .finish())
 }
 
@@ -996,11 +1038,11 @@ async fn demo_login() -> Result<HttpResponse> {
             })));
         }
     };
-    
+
     let demo_user = oauth_config
         .get_provider("demo")
         .and_then(|p| p.demo_user.as_ref());
-    
+
     let user_session = if let Some(demo) = demo_user {
         UserSession::new(
             demo.id.clone(),
@@ -1018,7 +1060,7 @@ async fn demo_login() -> Result<HttpResponse> {
             "demo".to_string(),
         )
     };
-    
+
     Ok(HttpResponse::Ok().json(json!({
         "success": true,
         "user": user_session
@@ -1048,7 +1090,7 @@ async fn get_google_cloud_projects() -> Result<HttpResponse> {
     // 1. Get the user's OAuth token from the session
     // 2. Make an authenticated request to Google Cloud Resource Manager API
     // 3. Return the list of projects
-    
+
     // For now, return a mock response indicating authentication is needed
     Ok(HttpResponse::Unauthorized().json(json!({
         "success": false,
@@ -1082,7 +1124,7 @@ async fn get_google_cloud_projects_mock() -> Result<HttpResponse> {
             parent: None,
         },
     ];
-    
+
     Ok(HttpResponse::Ok().json(json!({
         "success": true,
         "projects": mock_projects,
@@ -1105,12 +1147,12 @@ async fn verify_google_auth(_req: web::Json<GoogleAuthRequest>) -> Result<HttpRe
 
 async fn get_sheets_config_data() -> anyhow::Result<serde_json::Value> {
     let config_path = "admin/google/form/config.json";
-    let config_content = std::fs::read_to_string(config_path)
-        .context("Failed to read sheets config file")?;
-    
-    let config: serde_json::Value = serde_json::from_str(&config_content)
-        .context("Failed to parse sheets config JSON")?;
-    
+    let config_content =
+        std::fs::read_to_string(config_path).context("Failed to read sheets config file")?;
+
+    let config: serde_json::Value =
+        serde_json::from_str(&config_content).context("Failed to parse sheets config JSON")?;
+
     Ok(config)
 }
 
@@ -1119,11 +1161,11 @@ async fn validate_sheets_credentials() -> anyhow::Result<bool> {
     // Check if service account key exists and is valid JSON
     let service_key_json = std::env::var("GOOGLE_SERVICE_KEY")
         .context("GOOGLE_SERVICE_KEY not found in environment")?;
-    
+
     // Try to parse as JSON to validate format
     let _service_account_key: serde_json::Value = serde_json::from_str(&service_key_json)
         .context("Failed to parse service account key JSON")?;
-    
+
     // TODO: Actually validate credentials with Google API
     Ok(true)
 }
@@ -1132,24 +1174,18 @@ async fn validate_sheets_credentials() -> anyhow::Result<bool> {
 async fn get_sheets_config() -> Result<HttpResponse> {
     // Try to read configuration from file
     let config_path = "admin/google/form/config.json";
-    
+
     match std::fs::read_to_string(config_path) {
-        Ok(config_content) => {
-            match serde_json::from_str::<serde_json::Value>(&config_content) {
-                Ok(config) => {
-                    Ok(HttpResponse::Ok().json(json!({
-                        "success": true,
-                        "config": config
-                    })))
-                }
-                Err(e) => {
-                    Ok(HttpResponse::InternalServerError().json(json!({
-                        "success": false,
-                        "error": format!("Failed to parse configuration: {}", e)
-                    })))
-                }
-            }
-        }
+        Ok(config_content) => match serde_json::from_str::<serde_json::Value>(&config_content) {
+            Ok(config) => Ok(HttpResponse::Ok().json(json!({
+                "success": true,
+                "config": config
+            }))),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "error": format!("Failed to parse configuration: {}", e)
+            }))),
+        },
         Err(_) => {
             // Return default configuration
             Ok(HttpResponse::Ok().json(json!({
@@ -1194,7 +1230,7 @@ async fn get_sheets_config() -> Result<HttpResponse> {
 // Save Google Sheets configuration
 async fn save_sheets_config(req: web::Json<serde_json::Value>) -> Result<HttpResponse> {
     let config_path = "admin/google/form/config.json";
-    
+
     // Create directory if it doesn't exist
     if let Some(parent) = std::path::Path::new(config_path).parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -1204,38 +1240,30 @@ async fn save_sheets_config(req: web::Json<serde_json::Value>) -> Result<HttpRes
             })));
         }
     }
-    
+
     // Pretty print the JSON configuration
     match serde_json::to_string_pretty(&*req) {
-        Ok(config_json) => {
-            match std::fs::write(config_path, config_json) {
-                Ok(_) => {
-                    Ok(HttpResponse::Ok().json(json!({
-                        "success": true,
-                        "message": "Form configuration saved successfully to config.json"
-                    })))
-                }
-                Err(e) => {
-                    Ok(HttpResponse::InternalServerError().json(json!({
-                        "success": false,
-                        "error": format!("Failed to write configuration file: {}", e)
-                    })))
-                }
-            }
-        }
-        Err(e) => {
-            Ok(HttpResponse::BadRequest().json(json!({
+        Ok(config_json) => match std::fs::write(config_path, config_json) {
+            Ok(_) => Ok(HttpResponse::Ok().json(json!({
+                "success": true,
+                "message": "Form configuration saved successfully to config.json"
+            }))),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
                 "success": false,
-                "error": format!("Invalid JSON configuration: {}", e)
-            })))
-        }
+                "error": format!("Failed to write configuration file: {}", e)
+            }))),
+        },
+        Err(e) => Ok(HttpResponse::BadRequest().json(json!({
+            "success": false,
+            "error": format!("Invalid JSON configuration: {}", e)
+        }))),
     }
 }
 
 // Get member data by email from Google Sheets
 async fn get_member_by_email(path: web::Path<String>) -> Result<HttpResponse> {
     let email = path.into_inner();
-    
+
     // Get configuration
     let config = match get_sheets_config_data().await {
         Ok(config) => config,
@@ -1247,12 +1275,12 @@ async fn get_member_by_email(path: web::Path<String>) -> Result<HttpResponse> {
             })));
         }
     };
-    
+
     // Extract sheet details from config
     let spreadsheet_id = config["googleSheets"]["spreadsheetId"]
         .as_str()
         .unwrap_or("REPLACE_WITH_YOUR_GOOGLE_SHEET_ID");
-    
+
     if spreadsheet_id == "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID" {
         return Ok(HttpResponse::BadRequest().json(json!({
             "success": false,
@@ -1270,7 +1298,7 @@ async fn get_member_by_email(path: web::Path<String>) -> Result<HttpResponse> {
             }
         })));
     }
-    
+
     // Check if credentials are configured
     match validate_sheets_credentials().await {
         Ok(_) => {
@@ -1316,12 +1344,12 @@ async fn save_member_data(req: web::Json<GoogleSheetsMemberRequest>) -> Result<H
             })));
         }
     };
-    
+
     // Extract sheet details from config
     let spreadsheet_id = config["googleSheets"]["spreadsheetId"]
         .as_str()
         .unwrap_or("REPLACE_WITH_YOUR_GOOGLE_SHEET_ID");
-    
+
     if spreadsheet_id == "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID" {
         return Ok(HttpResponse::BadRequest().json(json!({
             "success": false,
@@ -1339,7 +1367,7 @@ async fn save_member_data(req: web::Json<GoogleSheetsMemberRequest>) -> Result<H
             }
         })));
     }
-    
+
     // Check if credentials are configured
     match validate_sheets_credentials().await {
         Ok(_) => {
@@ -1389,7 +1417,7 @@ async fn fetch_csv(req: web::Json<FetchCsvRequest>) -> Result<HttpResponse> {
             "error": "Invalid URL protocol - must be HTTP or HTTPS"
         })));
     }
-    
+
     match reqwest::get(url).await {
         Ok(response) => {
             if response.status().is_success() {
@@ -1407,12 +1435,10 @@ async fn fetch_csv(req: web::Json<FetchCsvRequest>) -> Result<HttpResponse> {
                             })))
                         }
                     }
-                    Err(e) => {
-                        Ok(HttpResponse::Ok().json(json!({
-                            "success": false,
-                            "error": format!("Failed to read response data: {e}")
-                        })))
-                    }
+                    Err(e) => Ok(HttpResponse::Ok().json(json!({
+                        "success": false,
+                        "error": format!("Failed to read response data: {e}")
+                    }))),
                 }
             } else {
                 Ok(HttpResponse::Ok().json(json!({
@@ -1421,18 +1447,12 @@ async fn fetch_csv(req: web::Json<FetchCsvRequest>) -> Result<HttpResponse> {
                 })))
             }
         }
-        Err(e) => {
-            Ok(HttpResponse::Ok().json(json!({
-                "success": false,
-                "error": format!("Network error: {e}")
-            })))
-        }
+        Err(e) => Ok(HttpResponse::Ok().json(json!({
+            "success": false,
+            "error": format!("Network error: {e}")
+        }))),
     }
 }
-
-
-
-
 
 #[derive(Debug, Deserialize)]
 struct ProxyRequest {
@@ -1448,12 +1468,11 @@ struct ProxyResponse {
     error: Option<String>,
 }
 
-
-
-
-
 // Analyze data with Claude Code CLI
-async fn get_recommendations_handler(req: web::Json<RecommendationRequest>, data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
+async fn get_recommendations_handler(
+    req: web::Json<RecommendationRequest>,
+    data: web::Data<Arc<ApiState>>,
+) -> Result<HttpResponse> {
     let excel_file_path = {
         let config_guard = data.config.lock().unwrap();
         config_guard.excel_file_path.clone()
@@ -1464,16 +1483,13 @@ async fn get_recommendations_handler(req: web::Json<RecommendationRequest>, data
     }
 }
 
-
-
-
 // Proxy external requests to bypass CORS restrictions
 async fn proxy_external_request(req: web::Json<ProxyRequest>) -> Result<HttpResponse> {
     println!("Proxy request to: {}", req.url);
-    
+
     // Create HTTP client
     let client = reqwest::Client::new();
-    
+
     // Build request
     let mut request_builder = match req.method.as_deref().unwrap_or("GET") {
         "POST" => client.post(&req.url),
@@ -1482,35 +1498,42 @@ async fn proxy_external_request(req: web::Json<ProxyRequest>) -> Result<HttpResp
         "PATCH" => client.patch(&req.url),
         _ => client.get(&req.url),
     };
-    
+
     // Add headers if provided
     if let Some(headers) = &req.headers {
         for (key, value) in headers {
             request_builder = request_builder.header(key, value);
         }
     }
-    
+
     // Set a reasonable timeout
     request_builder = request_builder.timeout(std::time::Duration::from_secs(30));
-    
+
     match request_builder.send().await {
         Ok(response) => {
             // Get content type to determine how to parse the response
-            let content_type = response.headers()
+            let content_type = response
+                .headers()
                 .get("content-type")
                 .and_then(|ct| ct.to_str().ok())
                 .unwrap_or("")
                 .to_lowercase();
-            
+
             // Try to get the response text first
             match response.text().await {
                 Ok(text_data) => {
-                    println!("Proxy request successful, returning {} bytes", text_data.len());
-                    
+                    println!(
+                        "Proxy request successful, returning {} bytes",
+                        text_data.len()
+                    );
+
                     // Check if it's XML/RSS content
-                    if content_type.contains("xml") || content_type.contains("rss") || 
-                       text_data.trim_start().starts_with("<?xml") || 
-                       text_data.contains("<rss") || text_data.contains("<feed") {
+                    if content_type.contains("xml")
+                        || content_type.contains("rss")
+                        || text_data.trim_start().starts_with("<?xml")
+                        || text_data.contains("<rss")
+                        || text_data.contains("<feed")
+                    {
                         // Return as raw text for XML/RSS content
                         Ok(HttpResponse::Ok().json(ProxyResponse {
                             success: true,
@@ -1520,13 +1543,11 @@ async fn proxy_external_request(req: web::Json<ProxyRequest>) -> Result<HttpResp
                     } else {
                         // Try to parse as JSON for non-XML content
                         match serde_json::from_str::<serde_json::Value>(&text_data) {
-                            Ok(json_data) => {
-                                Ok(HttpResponse::Ok().json(ProxyResponse {
-                                    success: true,
-                                    data: Some(json_data),
-                                    error: None,
-                                }))
-                            }
+                            Ok(json_data) => Ok(HttpResponse::Ok().json(ProxyResponse {
+                                success: true,
+                                data: Some(json_data),
+                                error: None,
+                            })),
                             Err(_) => {
                                 // If JSON parsing fails, return as raw text
                                 Ok(HttpResponse::Ok().json(ProxyResponse {
@@ -1568,14 +1589,14 @@ struct Hdf5Request {
 // Proxy HDF5 files to avoid CORS issues and enable client-side processing
 async fn proxy_hdf5_file(req: web::Json<Hdf5Request>) -> Result<HttpResponse> {
     println!("HDF5 proxy request to: {}", req.url);
-    
+
     // Validate URL for basic security
     if !req.url.starts_with("http://") && !req.url.starts_with("https://") {
         return Ok(HttpResponse::BadRequest().json(json!({
             "error": "Invalid URL: must be HTTP or HTTPS"
         })));
     }
-    
+
     // Create HTTP client with timeout
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout for large files
@@ -1584,14 +1605,14 @@ async fn proxy_hdf5_file(req: web::Json<Hdf5Request>) -> Result<HttpResponse> {
             eprintln!("Failed to create HTTP client: {}", e);
             actix_web::error::ErrorInternalServerError("Client creation failed")
         })?;
-    
+
     // Fetch the HDF5 file
     match client.get(&req.url).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 // Get content length if available
                 let content_length = response.content_length();
-                
+
                 // Check file size limit (50MB)
                 if let Some(size) = content_length {
                     if size > 50 * 1024 * 1024 {
@@ -1600,12 +1621,12 @@ async fn proxy_hdf5_file(req: web::Json<Hdf5Request>) -> Result<HttpResponse> {
                         })));
                     }
                 }
-                
+
                 // Get the binary data
                 match response.bytes().await {
                     Ok(bytes) => {
                         println!("Successfully fetched HDF5 file: {} bytes", bytes.len());
-                        
+
                         // Return binary data with appropriate headers
                         Ok(HttpResponse::Ok()
                             .insert_header(("Content-Type", "application/octet-stream"))
@@ -1637,7 +1658,10 @@ async fn proxy_hdf5_file(req: web::Json<Hdf5Request>) -> Result<HttpResponse> {
 }
 
 // Get list of tables with row counts - returns real database tables with accurate counts
-async fn get_tables(data: web::Data<Arc<ApiState>>, query: web::Query<std::collections::HashMap<String, String>>) -> Result<HttpResponse> {
+async fn get_tables(
+    data: web::Data<Arc<ApiState>>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> Result<HttpResponse> {
     // Check if a specific connection is requested
     let connection_name = query.get("connection");
     let pool = if let Some(connection_name) = connection_name {
@@ -1653,13 +1677,13 @@ async fn get_tables(data: web::Data<Arc<ApiState>>, query: web::Query<std::colle
             let user_key = format!("{connection_name}_USER");
             let password_key = format!("{connection_name}_PASSWORD");
             let ssl_key = format!("{connection_name}_SSL_MODE");
-            
+
             if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(password)) = (
                 std::env::var(&host_key),
                 std::env::var(&port_key),
                 std::env::var(&name_key),
                 std::env::var(&user_key),
-                std::env::var(&password_key)
+                std::env::var(&password_key),
             ) {
                 let ssl_mode = std::env::var(&ssl_key).unwrap_or_else(|_| "require".to_string());
                 format!("postgres://{user}:{password}@{host}:{port}/{name}?sslmode={ssl_mode}")
@@ -1669,7 +1693,7 @@ async fn get_tables(data: web::Data<Arc<ApiState>>, query: web::Query<std::colle
                 })));
             }
         };
-        
+
         // Use the specified connection
         match sqlx::postgres::PgPool::connect(&database_url).await {
             Ok(pool) => pool,
@@ -1690,11 +1714,11 @@ async fn get_tables(data: web::Data<Arc<ApiState>>, query: web::Query<std::colle
             }
         }
     };
-    
+
     match get_database_tables(&pool, None, connection_name).await {
         Ok(tables) => {
             let mut table_info = Vec::new();
-            
+
             // Get actual row counts for each table
             for table in tables {
                 let query = format!("SELECT COUNT(*) FROM {}", table.name);
@@ -1715,61 +1739,75 @@ async fn get_tables(data: web::Data<Arc<ApiState>>, query: web::Query<std::colle
                     }
                 }
             }
-            
+
             Ok(HttpResponse::Ok().json(json!({ "tables": table_info })))
         }
-        Err(e) => {
-            Ok(HttpResponse::InternalServerError().json(json!({
-                "error": format!("Failed to fetch tables: {}", e)
-            })))
-        }
+        Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+            "error": format!("Failed to fetch tables: {}", e)
+        }))),
     }
 }
 
 // Get list of mock tables - returns hardcoded placeholder data
 async fn get_tables_mock() -> Result<HttpResponse> {
     let tables = vec![
-        "users", "accounts", "contacts", "opportunities", "activities",
-        "campaigns", "documents", "events", "roles", "projects",
-        "products", "prospects", "calls", "leads", "surveyquestionoptions",
-        "tags", "taggables"
+        "users",
+        "accounts",
+        "contacts",
+        "opportunities",
+        "activities",
+        "campaigns",
+        "documents",
+        "events",
+        "roles",
+        "projects",
+        "products",
+        "prospects",
+        "calls",
+        "leads",
+        "surveyquestionoptions",
+        "tags",
+        "taggables",
     ];
-    
-    let table_info: Vec<TableInfo> = tables.iter().map(|table_name| {
-        TableInfo {
-            name: table_name.to_string(),
-            row_count: 0, // Mock data shows 0 rows
-        }
-    }).collect();
-    
+
+    let table_info: Vec<TableInfo> = tables
+        .iter()
+        .map(|table_name| {
+            TableInfo {
+                name: table_name.to_string(),
+                row_count: 0, // Mock data shows 0 rows
+            }
+        })
+        .collect();
+
     Ok(HttpResponse::Ok().json(json!({ "tables": table_info })))
 }
 
 // Test database connection
 async fn db_test_connection(data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
     match &data.db {
-        Some(db) => {
-            match test_db_connection(db).await {
-                Ok(info) => Ok(HttpResponse::Ok().json(DatabaseResponse {
-                    success: true,
-                    message: Some("Database connection successful".to_string()),
-                    error: None,
-                    data: Some(serde_json::to_value(info).unwrap()),
-                })),
-                Err(e) => Ok(HttpResponse::InternalServerError().json(DatabaseResponse {
-                    success: false,
-                    message: None,
-                    error: Some(format!("Connection failed: {e}")),
-                    data: None,
-                })),
-            }
-        }
+        Some(db) => match test_db_connection(db).await {
+            Ok(info) => Ok(HttpResponse::Ok().json(DatabaseResponse {
+                success: true,
+                message: Some("Database connection successful".to_string()),
+                error: None,
+                data: Some(serde_json::to_value(info).unwrap()),
+            })),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(DatabaseResponse {
+                success: false,
+                message: None,
+                error: Some(format!("Connection failed: {e}")),
+                data: None,
+            })),
+        },
         None => Ok(HttpResponse::ServiceUnavailable().json(DatabaseResponse {
             success: false,
             message: None,
-            error: Some("Database not available. Server started without database connection.".to_string()),
+            error: Some(
+                "Database not available. Server started without database connection.".to_string(),
+            ),
             data: None,
-        }))
+        })),
     }
 }
 
@@ -1789,7 +1827,7 @@ async fn db_test_commons_connection(data: web::Data<Arc<ApiState>>) -> Result<Ht
                 Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
                     "success": false,
                     "message": "Commons database connection failed",
-                    "database": "membercommons", 
+                    "database": "membercommons",
                     "active": false,
                     "error": e.to_string()
                 }))),
@@ -1801,7 +1839,7 @@ async fn db_test_commons_connection(data: web::Data<Arc<ApiState>>) -> Result<Ht
             "database": "membercommons",
             "active": false,
             "error": "Server started without database connection"
-        })))
+        }))),
     }
 }
 
@@ -1812,10 +1850,15 @@ async fn db_test_location_connection(_data: web::Data<Arc<ApiState>>) -> Result<
     let location_name = std::env::var("LOCATIONS_NAME").unwrap_or_default();
     let location_user = std::env::var("LOCATIONS_USER").unwrap_or_default();
     let location_password = std::env::var("LOCATIONS_PASSWORD").unwrap_or_default();
-    
+
     // Check if configuration has placeholder values
-    if location_host.contains("your-server") || location_password == "your_password" || 
-       location_host.is_empty() || location_name.is_empty() || location_user.is_empty() || location_password.is_empty() {
+    if location_host.contains("your-server")
+        || location_password == "your_password"
+        || location_host.is_empty()
+        || location_name.is_empty()
+        || location_user.is_empty()
+        || location_password.is_empty()
+    {
         return Ok(HttpResponse::Ok().json(json!({
             "success": false,
             "message": "Locations Database not configured",
@@ -1824,38 +1867,36 @@ async fn db_test_location_connection(_data: web::Data<Arc<ApiState>>) -> Result<
             "error": "Database credentials not configured (placeholder values detected)"
         })));
     }
-    
+
     // Attempt to create a temporary connection to test
     let ssl_mode = std::env::var("LOCATIONS_SSL_MODE").unwrap_or_else(|_| "require".to_string());
     let location_port = std::env::var("LOCATIONS_PORT").unwrap_or_else(|_| "5432".to_string());
     let database_url = format!("postgres://{location_user}:{location_password}@{location_host}:{location_port}/{location_name}?sslmode={ssl_mode}");
-    
+
     match sqlx::postgres::PgPool::connect(&database_url).await {
-        Ok(pool) => {
-            match test_db_connection(&pool).await {
-                Ok(info) => Ok(HttpResponse::Ok().json(json!({
-                    "success": true,
-                    "message": "Locations Database connection successful",
-                    "database": "locations_db",
-                    "active": true,
-                    "info": info
-                }))),
-                Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
-                    "success": false,
-                    "message": "Locations Database connection failed",
-                    "database": "locations_db",
-                    "active": false,
-                    "error": e.to_string()
-                }))),
-            }
-        }
+        Ok(pool) => match test_db_connection(&pool).await {
+            Ok(info) => Ok(HttpResponse::Ok().json(json!({
+                "success": true,
+                "message": "Locations Database connection successful",
+                "database": "locations_db",
+                "active": true,
+                "info": info
+            }))),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "message": "Locations Database connection failed",
+                "database": "locations_db",
+                "active": false,
+                "error": e.to_string()
+            }))),
+        },
         Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
             "success": false,
             "message": "Locations Database connection failed",
             "database": "locations_db",
             "active": false,
             "error": e.to_string()
-        })))
+        }))),
     }
 }
 
@@ -1866,10 +1907,15 @@ async fn db_test_exiobase_connection(_data: web::Data<Arc<ApiState>>) -> Result<
     let exiobase_name = std::env::var("EXIOBASE_NAME").unwrap_or_default();
     let exiobase_user = std::env::var("EXIOBASE_USER").unwrap_or_default();
     let exiobase_password = std::env::var("EXIOBASE_PASSWORD").unwrap_or_default();
-    
+
     // Check if configuration has placeholder values
-    if exiobase_host.contains("your-server") || exiobase_password == "your_password" || 
-       exiobase_host.is_empty() || exiobase_name.is_empty() || exiobase_user.is_empty() || exiobase_password.is_empty() {
+    if exiobase_host.contains("your-server")
+        || exiobase_password == "your_password"
+        || exiobase_host.is_empty()
+        || exiobase_name.is_empty()
+        || exiobase_user.is_empty()
+        || exiobase_password.is_empty()
+    {
         return Ok(HttpResponse::Ok().json(json!({
             "success": false,
             "message": "ModelEarth Industry Database not configured",
@@ -1878,37 +1924,35 @@ async fn db_test_exiobase_connection(_data: web::Data<Arc<ApiState>>) -> Result<
             "error": "Database credentials not configured (placeholder values detected)"
         })));
     }
-    
+
     // Attempt to create a temporary connection to test
     let ssl_mode = std::env::var("EXIOBASE_SSL_MODE").unwrap_or_else(|_| "require".to_string());
     let database_url = format!("postgres://{exiobase_user}:{exiobase_password}@{exiobase_host}:5432/{exiobase_name}?sslmode={ssl_mode}");
-    
+
     match sqlx::postgres::PgPool::connect(&database_url).await {
-        Ok(pool) => {
-            match test_db_connection(&pool).await {
-                Ok(info) => Ok(HttpResponse::Ok().json(json!({
-                    "success": true,
-                    "message": "ModelEarth Industry Database connection successful",
-                    "database": "model_earth_db",
-                    "active": true,
-                    "info": info
-                }))),
-                Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
-                    "success": false,
-                    "message": "ModelEarth Industry Database connection failed",
-                    "database": "model_earth_db",
-                    "active": false,
-                    "error": e.to_string()
-                }))),
-            }
-        }
+        Ok(pool) => match test_db_connection(&pool).await {
+            Ok(info) => Ok(HttpResponse::Ok().json(json!({
+                "success": true,
+                "message": "ModelEarth Industry Database connection successful",
+                "database": "model_earth_db",
+                "active": true,
+                "info": info
+            }))),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
+                "success": false,
+                "message": "ModelEarth Industry Database connection failed",
+                "database": "model_earth_db",
+                "active": false,
+                "error": e.to_string()
+            }))),
+        },
         Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
             "success": false,
             "message": "ModelEarth Industry Database connection failed",
             "database": "model_earth_db",
             "active": false,
             "error": e.to_string()
-        })))
+        }))),
     }
 }
 
@@ -1919,28 +1963,28 @@ async fn db_list_tables(
 ) -> Result<HttpResponse> {
     let limit = query.get("limit").and_then(|s| s.parse::<i32>().ok());
     match &data.db {
-        Some(db) => {
-            match get_database_tables(db, limit, None).await {
-                Ok(tables) => Ok(HttpResponse::Ok().json(DatabaseResponse {
-                    success: true,
-                    message: Some(format!("Found {} tables", tables.len())),
-                    error: None,
-                    data: Some(serde_json::json!({ "tables": tables })),
-                })),
-                Err(e) => Ok(HttpResponse::InternalServerError().json(DatabaseResponse {
-                    success: false,
-                    message: None,
-                    error: Some(format!("Failed to list tables: {e}")),
-                    data: None,
-                })),
-            }
-        }
+        Some(db) => match get_database_tables(db, limit, None).await {
+            Ok(tables) => Ok(HttpResponse::Ok().json(DatabaseResponse {
+                success: true,
+                message: Some(format!("Found {} tables", tables.len())),
+                error: None,
+                data: Some(serde_json::json!({ "tables": tables })),
+            })),
+            Err(e) => Ok(HttpResponse::InternalServerError().json(DatabaseResponse {
+                success: false,
+                message: None,
+                error: Some(format!("Failed to list tables: {e}")),
+                data: None,
+            })),
+        },
         None => Ok(HttpResponse::ServiceUnavailable().json(DatabaseResponse {
             success: false,
             message: None,
-            error: Some("Database not available. Server started without database connection.".to_string()),
+            error: Some(
+                "Database not available. Server started without database connection.".to_string(),
+            ),
             data: None,
-        }))
+        })),
     }
 }
 
@@ -1951,7 +1995,7 @@ async fn db_get_table_info(
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> Result<HttpResponse> {
     let table_name = path.into_inner();
-    
+
     // Check if a specific connection is requested
     let pool = if let Some(connection_name) = query.get("connection") {
         // Get the database URL for this connection
@@ -1966,13 +2010,13 @@ async fn db_get_table_info(
             let user_key = format!("{connection_name}_USER");
             let password_key = format!("{connection_name}_PASSWORD");
             let ssl_key = format!("{connection_name}_SSL_MODE");
-            
+
             if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(password)) = (
                 std::env::var(&host_key),
                 std::env::var(&port_key),
                 std::env::var(&name_key),
                 std::env::var(&user_key),
-                std::env::var(&password_key)
+                std::env::var(&password_key),
             ) {
                 let ssl_mode = std::env::var(&ssl_key).unwrap_or_else(|_| "require".to_string());
                 format!("postgres://{user}:{password}@{host}:{port}/{name}?sslmode={ssl_mode}")
@@ -1980,12 +2024,14 @@ async fn db_get_table_info(
                 return Ok(HttpResponse::BadRequest().json(DatabaseResponse {
                     success: false,
                     message: None,
-                    error: Some(format!("Connection '{connection_name}' not found in environment variables")),
+                    error: Some(format!(
+                        "Connection '{connection_name}' not found in environment variables"
+                    )),
                     data: None,
                 }));
             }
         };
-        
+
         // Use the specified connection
         match sqlx::postgres::PgPool::connect(&database_url).await {
             Ok(pool) => pool,
@@ -2006,13 +2052,16 @@ async fn db_get_table_info(
                 return Ok(HttpResponse::ServiceUnavailable().json(DatabaseResponse {
                     success: false,
                     message: None,
-                    error: Some("Database not available. Server started without database connection.".to_string()),
+                    error: Some(
+                        "Database not available. Server started without database connection."
+                            .to_string(),
+                    ),
                     data: None,
                 }));
             }
         }
     };
-    
+
     match get_table_details(&pool, &table_name).await {
         Ok(info) => Ok(HttpResponse::Ok().json(DatabaseResponse {
             success: true,
@@ -2060,13 +2109,13 @@ async fn db_execute_query(
             let user_key = format!("{connection_name}_USER");
             let password_key = format!("{connection_name}_PASSWORD");
             let ssl_key = format!("{connection_name}_SSL_MODE");
-            
+
             if let (Ok(host), Ok(port), Ok(name), Ok(user), Ok(password)) = (
                 std::env::var(&host_key),
                 std::env::var(&port_key),
                 std::env::var(&name_key),
                 std::env::var(&user_key),
-                std::env::var(&password_key)
+                std::env::var(&password_key),
             ) {
                 let ssl_mode = std::env::var(&ssl_key).unwrap_or_else(|_| "require".to_string());
                 format!("postgres://{user}:{password}@{host}:{port}/{name}?sslmode={ssl_mode}")
@@ -2074,12 +2123,14 @@ async fn db_execute_query(
                 return Ok(HttpResponse::BadRequest().json(DatabaseResponse {
                     success: false,
                     message: None,
-                    error: Some(format!("Connection '{connection_name}' not found in environment variables")),
+                    error: Some(format!(
+                        "Connection '{connection_name}' not found in environment variables"
+                    )),
                     data: None,
                 }));
             }
         };
-        
+
         // Use the specified connection
         match sqlx::postgres::PgPool::connect(&database_url).await {
             Ok(pool) => pool,
@@ -2100,7 +2151,10 @@ async fn db_execute_query(
                 return Ok(HttpResponse::ServiceUnavailable().json(DatabaseResponse {
                     success: false,
                     message: None,
-                    error: Some("Database not available. Server started without database connection.".to_string()),
+                    error: Some(
+                        "Database not available. Server started without database connection."
+                            .to_string(),
+                    ),
                     data: None,
                 }));
             }
@@ -2134,31 +2188,34 @@ async fn get_projects(data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
             })));
         }
     };
-    
+
     let projects_query = sqlx::query(
         "SELECT id, name, description, status, date_entered, date_modified FROM projects ORDER BY date_modified DESC LIMIT 50"
     )
     .fetch_all(db)
     .await;
-    
+
     match projects_query {
         Ok(rows) => {
-            let projects: Vec<serde_json::Value> = rows.into_iter().map(|row| {
-                json!({
-                    "id": row.get::<Uuid, _>("id"),
-                    "name": row.get::<String, _>("name"),
-                    "description": row.get::<Option<String>, _>("description"),
-                    "status": row.get::<Option<String>, _>("status"),
-                    "created_date": row.get::<chrono::DateTime<Utc>, _>("date_entered"),
-                    "modified_date": row.get::<chrono::DateTime<Utc>, _>("date_modified")
+            let projects: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|row| {
+                    json!({
+                        "id": row.get::<Uuid, _>("id"),
+                        "name": row.get::<String, _>("name"),
+                        "description": row.get::<Option<String>, _>("description"),
+                        "status": row.get::<Option<String>, _>("status"),
+                        "created_date": row.get::<chrono::DateTime<Utc>, _>("date_entered"),
+                        "modified_date": row.get::<chrono::DateTime<Utc>, _>("date_modified")
+                    })
                 })
-            }).collect();
-            
+                .collect();
+
             Ok(HttpResponse::Ok().json(json!({
                 "success": true,
                 "data": projects
             })))
-        },
+        }
         Err(e) => {
             println!("Error fetching projects: {e}");
             // Return empty array if database query fails
@@ -2182,19 +2239,23 @@ async fn create_project(
             })));
         }
     };
-    
+
     let id = Uuid::new_v4();
     let now = Utc::now();
-    
+
     // Parse date strings into NaiveDate
-    let start_date = req.estimated_start_date.as_ref()
+    let start_date = req
+        .estimated_start_date
+        .as_ref()
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
-    
-    let end_date = req.estimated_end_date.as_ref()
+
+    let end_date = req
+        .estimated_end_date
+        .as_ref()
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
-    
+
     let result = sqlx::query(
         r#"
         INSERT INTO projects (
@@ -2202,7 +2263,7 @@ async fn create_project(
             estimated_start_date, estimated_end_date,
             date_entered, date_modified, created_by, modified_user_id
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        "#
+        "#,
     )
     .bind(id)
     .bind(&req.name)
@@ -2216,7 +2277,7 @@ async fn create_project(
     .bind("1") // Default user ID
     .execute(db)
     .await;
-    
+
     match result {
         Ok(_) => Ok(HttpResponse::Created().json(json!({
             "id": id.to_string(),
@@ -2243,9 +2304,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create accounts table
     sqlx::query(
         r#"
@@ -2261,9 +2324,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create contacts table
     sqlx::query(
         r#"
@@ -2289,9 +2354,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create projects table
     sqlx::query(
         r#"
@@ -2308,9 +2375,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create opportunities table
     sqlx::query(
         r#"
@@ -2331,9 +2400,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create activities table
     sqlx::query(
         r#"
@@ -2354,9 +2425,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create leads table
     sqlx::query(
         r#"
@@ -2379,9 +2452,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create campaigns table
     sqlx::query(
         r#"
@@ -2403,9 +2478,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create documents table
     sqlx::query(
         r#"
@@ -2425,9 +2502,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create events table
     sqlx::query(
         r#"
@@ -2445,9 +2524,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create products table
     sqlx::query(
         r#"
@@ -2465,9 +2546,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create roles table
     sqlx::query(
         r#"
@@ -2480,9 +2563,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create calls table
     sqlx::query(
         r#"
@@ -2505,9 +2590,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create surveyquestionoptions table
     sqlx::query(
         r#"
@@ -2521,9 +2608,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create tags table
     sqlx::query(
         r#"
@@ -2533,9 +2622,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create taggables table (polymorphic relationship)
     sqlx::query(
         r#"
@@ -2547,11 +2638,13 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(tag_id, taggable_type, taggable_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Create relationship tables
-    
+
     // User roles relationship
     sqlx::query(
         r#"
@@ -2562,9 +2655,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, role_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Account contacts relationship
     sqlx::query(
         r#"
@@ -2575,9 +2670,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(account_id, contact_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Account opportunities relationship
     sqlx::query(
         r#"
@@ -2588,9 +2685,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(account_id, opportunity_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Contact opportunities relationship
     sqlx::query(
         r#"
@@ -2601,9 +2700,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(contact_id, opportunity_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Campaign leads relationship
     sqlx::query(
         r#"
@@ -2614,9 +2715,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(campaign_id, lead_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Project contacts relationship
     sqlx::query(
         r#"
@@ -2627,9 +2730,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, contact_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Project accounts relationship
     sqlx::query(
         r#"
@@ -2640,9 +2745,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, account_id)
         )
-        "#
-    ).execute(pool).await?;
-    
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     println!("Database schema initialized successfully!");
     Ok(())
 }
@@ -2669,7 +2776,11 @@ async fn test_db_connection(pool: &Pool<Postgres>) -> Result<ConnectionInfo, sql
     })
 }
 
-async fn get_database_tables(pool: &Pool<Postgres>, limit: Option<i32>, connection_name: Option<&String>) -> Result<Vec<TableInfoDetailed>, sqlx::Error> {
+async fn get_database_tables(
+    pool: &Pool<Postgres>,
+    limit: Option<i32>,
+    connection_name: Option<&String>,
+) -> Result<Vec<TableInfoDetailed>, sqlx::Error> {
     let query = if let Some(limit_val) = limit {
         format!(
             r#"
@@ -2700,18 +2811,17 @@ async fn get_database_tables(pool: &Pool<Postgres>, limit: Option<i32>, connecti
         WHERE table_schema = 'public' 
             AND table_type = 'BASE TABLE'
         ORDER BY table_name
-        "#.to_string()
+        "#
+        .to_string()
     };
-    
-    let rows = sqlx::query(&query)
-    .fetch_all(pool)
-    .await?;
+
+    let rows = sqlx::query(&query).fetch_all(pool).await?;
 
     let mut tables = Vec::new();
     for row in rows {
         let table_name: String = row.get("table_name");
         let estimated_rows: Option<i64> = row.get("estimated_rows");
-        
+
         // Filter tables for EXIOBASE connection - only include valid tables
         if let Some(conn_name) = connection_name {
             if conn_name == "EXIOBASE" {
@@ -2721,10 +2831,10 @@ async fn get_database_tables(pool: &Pool<Postgres>, limit: Option<i32>, connecti
                 }
             }
         }
-        
+
         // Add description based on table name
         let description = get_table_description(&table_name);
-        
+
         tables.push(TableInfoDetailed {
             name: table_name,
             rows: estimated_rows,
@@ -2735,7 +2845,10 @@ async fn get_database_tables(pool: &Pool<Postgres>, limit: Option<i32>, connecti
     Ok(tables)
 }
 
-async fn get_table_details(pool: &Pool<Postgres>, table_name: &str) -> Result<HashMap<String, serde_json::Value>, sqlx::Error> {
+async fn get_table_details(
+    pool: &Pool<Postgres>,
+    table_name: &str,
+) -> Result<HashMap<String, serde_json::Value>, sqlx::Error> {
     // Get basic table info
     let row = sqlx::query(
         r#"
@@ -2771,40 +2884,68 @@ async fn get_table_details(pool: &Pool<Postgres>, table_name: &str) -> Result<Ha
     let mut columns = Vec::new();
     for col_row in column_rows {
         let mut column_info = serde_json::Map::new();
-        column_info.insert("name".to_string(), serde_json::Value::String(col_row.get::<String, _>("column_name")));
-        column_info.insert("type".to_string(), serde_json::Value::String(col_row.get::<String, _>("data_type")));
-        column_info.insert("nullable".to_string(), serde_json::Value::String(col_row.get::<String, _>("is_nullable")));
-        
+        column_info.insert(
+            "name".to_string(),
+            serde_json::Value::String(col_row.get::<String, _>("column_name")),
+        );
+        column_info.insert(
+            "type".to_string(),
+            serde_json::Value::String(col_row.get::<String, _>("data_type")),
+        );
+        column_info.insert(
+            "nullable".to_string(),
+            serde_json::Value::String(col_row.get::<String, _>("is_nullable")),
+        );
+
         if let Some(default_value) = col_row.get::<Option<String>, _>("column_default") {
-            column_info.insert("default".to_string(), serde_json::Value::String(default_value));
+            column_info.insert(
+                "default".to_string(),
+                serde_json::Value::String(default_value),
+            );
         }
-        
+
         if let Some(max_length) = col_row.get::<Option<i32>, _>("character_maximum_length") {
             column_info.insert("max_length".to_string(), serde_json::json!(max_length));
         }
-        
+
         columns.push(serde_json::Value::Object(column_info));
     }
 
     let mut info = HashMap::new();
-    info.insert("table_name".to_string(), serde_json::Value::String(table_name.to_string()));
-    info.insert("estimated_rows".to_string(), serde_json::json!(row.get::<Option<i64>, _>("estimated_rows")));
-    info.insert("column_count".to_string(), serde_json::json!(row.get::<i64, _>("column_count")));
-    info.insert("description".to_string(), serde_json::Value::String(
-        get_table_description(table_name).unwrap_or_else(|| "No description available".to_string())
-    ));
+    info.insert(
+        "table_name".to_string(),
+        serde_json::Value::String(table_name.to_string()),
+    );
+    info.insert(
+        "estimated_rows".to_string(),
+        serde_json::json!(row.get::<Option<i64>, _>("estimated_rows")),
+    );
+    info.insert(
+        "column_count".to_string(),
+        serde_json::json!(row.get::<i64, _>("column_count")),
+    );
+    info.insert(
+        "description".to_string(),
+        serde_json::Value::String(
+            get_table_description(table_name)
+                .unwrap_or_else(|| "No description available".to_string()),
+        ),
+    );
     info.insert("columns".to_string(), serde_json::Value::Array(columns));
 
     Ok(info)
 }
 
-async fn execute_safe_query(pool: &Pool<Postgres>, query: &str) -> Result<serde_json::Value, sqlx::Error> {
+async fn execute_safe_query(
+    pool: &Pool<Postgres>,
+    query: &str,
+) -> Result<serde_json::Value, sqlx::Error> {
     let rows = sqlx::query(query).fetch_all(pool).await?;
-    
+
     let mut results = Vec::new();
     for row in rows {
         let mut row_map = serde_json::Map::new();
-        
+
         // This is a simplified approach - in production you'd want to handle types properly
         for (i, column) in row.columns().iter().enumerate() {
             let value = match row.try_get_raw(i) {
@@ -2822,10 +2963,10 @@ async fn execute_safe_query(pool: &Pool<Postgres>, query: &str) -> Result<serde_
                 }
                 Err(_) => serde_json::Value::String("Error reading value".to_string()),
             };
-            
+
             row_map.insert(column.name().to_string(), value);
         }
-        
+
         results.push(serde_json::Value::Object(row_map));
     }
 
@@ -2865,8 +3006,11 @@ fn get_table_description(table_name: &str) -> Option<String> {
 
 // Run the API server
 async fn run_api_server(config: Config) -> anyhow::Result<()> {
-    println!("Attempting to connect to database: {}", &config.database_url);
-    
+    println!(
+        "Attempting to connect to database: {}",
+        &config.database_url
+    );
+
     let pool = match PgPoolOptions::new()
         .max_connections(5)
         .connect(&config.database_url)
@@ -2883,20 +3027,20 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
             None
         }
     };
-    
+
     // Create shared config for hot reloading
     let shared_config = Arc::new(Mutex::new(config));
-    
+
     // Start watching .env file for changes
     if let Err(e) = start_env_watcher(shared_config.clone()) {
         log::warn!("Failed to start .env file watcher: {e}");
     }
-    
+
     let state = Arc::new(ApiState {
         db: pool,
         config: shared_config.clone(),
     });
-    
+
     // Create persistent Claude session manager
     let claude_session_manager: ClaudeSessionManager = Arc::new(Mutex::new(ClaudeSession::new()));
 
@@ -2908,10 +3052,10 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
         let config_guard = shared_config.lock().unwrap();
         (config_guard.server_host.clone(), config_guard.server_port)
     };
-    
+
     println!("Starting API server on {server_host}:{server_port}");
     let session_manager_clone = claude_session_manager.clone();
-    
+
     let cognito_config_clone = cognito_config.clone();
 
     HttpServer::new(move || {
@@ -2937,12 +3081,21 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                     .service(
                         web::scope("/db")
                             .route("/test-connection", web::get().to(db_test_connection))
-                            .route("/test-commons-connection", web::get().to(db_test_commons_connection))
-                            .route("/test-exiobase-connection", web::get().to(db_test_exiobase_connection))
-                            .route("/test-locations-connection", web::get().to(db_test_location_connection))
+                            .route(
+                                "/test-commons-connection",
+                                web::get().to(db_test_commons_connection),
+                            )
+                            .route(
+                                "/test-exiobase-connection",
+                                web::get().to(db_test_exiobase_connection),
+                            )
+                            .route(
+                                "/test-locations-connection",
+                                web::get().to(db_test_location_connection),
+                            )
                             .route("/tables", web::get().to(db_list_tables))
                             .route("/table/{table_name}", web::get().to(db_get_table_info))
-                            .route("/query", web::post().to(db_execute_query))
+                            .route("/query", web::post().to(db_execute_query)),
                     )
                     .service(
                         web::scope("/import")
@@ -2950,38 +3103,44 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                             .route("/excel/preview", web::post().to(import::preview_excel_data))
                             .route("/excel/sheets", web::post().to(import::get_excel_sheets))
                             .route("/data", web::post().to(import::import_data))
-                            .route("/democracylab", web::post().to(import::import_democracylab_projects))
+                            .route(
+                                "/democracylab",
+                                web::post().to(import::import_democracylab_projects),
+                            ),
                     )
                     .service(
                         web::scope("/claude")
                             .route("/usage/cli", web::get().to(get_claude_usage_cli))
                             .route("/usage/website", web::get().to(get_claude_usage_website))
-                            .route("/analyze", web::post().to(claude_insights::analyze_with_claude_cli))
+                            .route(
+                                "/analyze",
+                                web::post().to(claude_insights::analyze_with_claude_cli),
+                            ),
                     )
                     .service(
                         web::scope("/gemini")
                             .route("/usage/cli", web::get().to(get_gemini_usage_cli))
                             .route("/usage/website", web::get().to(get_gemini_usage_website))
-                            .route("/analyze", web::post().to(gemini_insights::analyze_with_gemini))
+                            .route(
+                                "/analyze",
+                                web::post().to(gemini_insights::analyze_with_gemini),
+                            ),
                     )
-                    .service(
-                        web::scope("/insights")
-                            .route("/analyze", web::post().to(unified_insights::analyze_with_llm))
-                    )
-                    .service(
-                        web::scope("/github")
-                            .route("/token", web::get().to(get_github_token))
-                    )
+                    .service(web::scope("/insights").route(
+                        "/analyze",
+                        web::post().to(unified_insights::analyze_with_llm),
+                    ))
+                    .service(web::scope("/github").route("/token", web::get().to(get_github_token)))
                     .service(
                         web::scope("/semantic-search")
-                            .route("", web::post().to(semantic_search::search_projects))
+                            .route("", web::post().to(semantic_search::search_projects)),
                     )
                     .service(
                         web::scope("/google")
                             .route("/create-project", web::post().to(create_google_project))
                             .service(
                                 web::scope("/auth")
-                                    .route("/verify", web::post().to(verify_google_auth))
+                                    .route("/verify", web::post().to(verify_google_auth)),
                             )
                             .service(
                                 web::scope("/sheets")
@@ -2989,12 +3148,12 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                                     .route("/config", web::post().to(save_sheets_config))
                                     .route("/member/{email}", web::get().to(get_member_by_email))
                                     .route("/member", web::post().to(save_member_data))
-                                    .route("/member", web::put().to(save_member_data))
+                                    .route("/member", web::put().to(save_member_data)),
                             )
-                            .service(
-                                web::scope("/gemini")
-                                    .route("/analyze", web::post().to(gemini_insights::analyze_with_gemini))
-                            )
+                            .service(web::scope("/gemini").route(
+                                "/analyze",
+                                web::post().to(gemini_insights::analyze_with_gemini),
+                            )),
                     )
                     .service(
                         web::scope("/config")
@@ -3003,23 +3162,20 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                             .route("/env", web::post().to(save_env_config))
                             .route("/env/create", web::post().to(create_env_config))
                             .route("/gemini", web::get().to(gemini_insights::test_gemini_api))
-                            .route("/restart", web::post().to(restart_server))
+                            .route("/restart", web::post().to(restart_server)),
                     )
-                    .service(
-                        web::scope("/files")
-                            .route("/csv", web::post().to(save_csv_file))
-                    )
+                    .service(web::scope("/files").route("/csv", web::post().to(save_csv_file)))
                     .service(
                         web::scope("/proxy")
                             .route("/csv", web::post().to(fetch_csv))
                             .route("/external", web::post().to(proxy_external_request))
-                            .route("/hdf5", web::post().to(proxy_hdf5_file))
+                            .route("/hdf5", web::post().to(proxy_hdf5_file)),
                     )
                     .route("/scrape", web::get().to(scrape_site))
                     .route("/admin/git", web::post().to(run_git_script))
                     .service(
                         web::scope("/recommendations")
-                            .route("", web::post().to(get_recommendations_handler))
+                            .route("", web::post().to(get_recommendations_handler)),
                     )
                     .service(
                         web::scope("/auth")
@@ -3027,22 +3183,40 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                             .route("/logout", web::post().to(logout_user))
                             .route("/demo/login", web::post().to(demo_login))
                             .route("/{provider}/url", web::get().to(oauth_provider_url))
-                            .route("/{provider}/callback", web::get().to(oauth_provider_callback))
+                            .route(
+                                "/{provider}/callback",
+                                web::get().to(oauth_provider_callback),
+                            ),
                     )
                     .service(
                         web::scope("/google")
                             .route("/projects", web::get().to(get_google_cloud_projects))
-                            .route("/projects/mock", web::get().to(get_google_cloud_projects_mock))
+                            .route(
+                                "/projects/mock",
+                                web::get().to(get_google_cloud_projects_mock),
+                            ),
                     )
                     .service(
                         web::scope("/cognito")
                             .route("/test", web::get().to(api_integration::test_connection))
                             .route("/forms", web::get().to(api_integration::list_forms))
-                            .route("/forms/{form_id}/entries", web::get().to(api_integration::get_form_entries))
-                            .route("/proxy", web::get().to(api_integration::proxy_cognito_request))
+                            .route(
+                                "/forms/{form_id}/entries",
+                                web::get().to(api_integration::get_form_entries),
+                            )
+                            .route(
+                                "/proxy",
+                                web::get().to(api_integration::proxy_cognito_request),
+                            ),
                     )
-                    .route("/refresh-local", web::post().to(api_integration::refresh_local_file))
-                    .route("/save-dataset", web::post().to(api_integration::save_dataset))
+                    .route(
+                        "/refresh-local",
+                        web::post().to(api_integration::refresh_local_file),
+                    )
+                    .route(
+                        "/save-dataset",
+                        web::post().to(api_integration::save_dataset),
+                    ),
             )
     })
     .bind((server_host, server_port))?
@@ -3053,9 +3227,11 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
 }
 
 // Function to get persistent Claude CLI usage data
-async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) -> anyhow::Result<serde_json::Value> {
+async fn get_claude_cli_usage_persistent(
+    session_manager: ClaudeSessionManager,
+) -> anyhow::Result<serde_json::Value> {
     let mut session = session_manager.lock().unwrap();
-    
+
     // Check if we need to start a new session
     if !session.is_active() {
         println!("Starting new persistent Claude CLI session...");
@@ -3063,16 +3239,17 @@ async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) 
         session.total_input_tokens = 0;
         session.total_output_tokens = 0;
     }
-    
+
     // Increment prompt count for this session
     session.prompt_count += 1;
     let current_prompt_count = session.prompt_count;
-    
+
     // Send a small prompt to get current usage data
-    let prompt = format!("This is prompt #{current_prompt_count} in our persistent session. What is 2+2?");
-    
+    let prompt =
+        format!("This is prompt #{current_prompt_count} in our persistent session. What is 2+2?");
+
     println!("Sending prompt #{current_prompt_count} to Claude CLI persistent session...");
-    
+
     // Execute Claude CLI command with JSON output
     let output = Command::new("claude")
         .arg("--print")
@@ -3080,26 +3257,28 @@ async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) 
         .arg("json")
         .arg(&prompt)
         .output()
-        .context("Failed to execute claude command. Make sure Claude CLI is installed and accessible.")?;
-    
+        .context(
+            "Failed to execute claude command. Make sure Claude CLI is installed and accessible.",
+        )?;
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!("Claude CLI command failed: {stderr}"));
     }
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stdout_str = stdout.trim();
-    
+
     if stdout_str.is_empty() {
         return Err(anyhow::anyhow!("Claude CLI returned empty response"));
     }
-    
+
     // Parse the JSON response
     if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(stdout_str) {
         // Extract usage information if available
         if let Some(usage) = json_data.get("usage") {
             println!("Found usage data in Claude CLI response: {usage:?}");
-            
+
             // Update session tracking with new usage data
             if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                 session.total_input_tokens = input_tokens as u32;
@@ -3107,10 +3286,10 @@ async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) 
             if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                 session.total_output_tokens += output_tokens as u32; // Accumulate output tokens
             }
-            
+
             // Store the latest usage data
             session.last_usage = Some(usage.clone());
-            
+
             // Create enhanced usage data with session info
             let enhanced_usage = json!({
                 "input_tokens": usage.get("input_tokens").unwrap_or(&json!(0)),
@@ -3125,10 +3304,10 @@ async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) 
                     "session_start_timestamp": session.session_start
                 }
             });
-            
+
             return Ok(enhanced_usage);
         }
-        
+
         // If no usage field, create session status
         let usage_data = json!({
             "connection_status": "connected",
@@ -3140,19 +3319,21 @@ async fn get_claude_cli_usage_persistent(session_manager: ClaudeSessionManager) 
             },
             "note": "Claude CLI is connected and working, but usage data is not available through the CLI"
         });
-        
+
         println!("Claude CLI persistent session active, returning status: {usage_data:?}");
         return Ok(usage_data);
     }
-    
+
     // If JSON parsing fails, Claude CLI might not be working properly
-    Err(anyhow::anyhow!("Claude CLI response could not be parsed as JSON: {stdout_str}"))
+    Err(anyhow::anyhow!(
+        "Claude CLI response could not be parsed as JSON: {stdout_str}"
+    ))
 }
 
 // Fallback function for non-persistent usage (keeping for compatibility)
 async fn get_claude_cli_usage() -> anyhow::Result<serde_json::Value> {
     println!("Using fallback one-time Claude CLI request...");
-    
+
     let output = Command::new("claude")
         .arg("--print")
         .arg("--output-format")
@@ -3160,27 +3341,28 @@ async fn get_claude_cli_usage() -> anyhow::Result<serde_json::Value> {
         .arg("What is 1+1?")
         .output()
         .context("Failed to execute claude command")?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!("Claude CLI command failed: {stderr}"));
     }
-    
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stdout_str = stdout.trim();
-    
+
     if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(stdout_str) {
         if let Some(usage) = json_data.get("usage") {
             return Ok(usage.clone());
         }
     }
-    
+
     Err(anyhow::anyhow!("Could not extract usage data"))
 }
 
-
 // Handlers for Claude usage - get real data from persistent Claude CLI session
-async fn get_claude_usage_cli(session_manager: web::Data<ClaudeSessionManager>) -> Result<HttpResponse> {
+async fn get_claude_usage_cli(
+    session_manager: web::Data<ClaudeSessionManager>,
+) -> Result<HttpResponse> {
     match get_claude_cli_usage_persistent(session_manager.get_ref().clone()).await {
         Ok(usage_data) => Ok(HttpResponse::Ok().json(json!({
             "success": true,
@@ -3197,13 +3379,15 @@ async fn get_claude_usage_cli(session_manager: web::Data<ClaudeSessionManager>) 
                 Err(fallback_e) => Ok(HttpResponse::Ok().json(json!({
                     "success": false,
                     "error": format!("Failed to get Claude CLI usage: {fallback_e}")
-                })))
+                }))),
             }
         }
     }
 }
 
-async fn get_claude_usage_website(session_manager: web::Data<ClaudeSessionManager>) -> Result<HttpResponse> {
+async fn get_claude_usage_website(
+    session_manager: web::Data<ClaudeSessionManager>,
+) -> Result<HttpResponse> {
     // For website usage, we'll use the same persistent CLI session since that's what's available
     match get_claude_cli_usage_persistent(session_manager.get_ref().clone()).await {
         Ok(usage_data) => Ok(HttpResponse::Ok().json(json!({
@@ -3211,7 +3395,7 @@ async fn get_claude_usage_website(session_manager: web::Data<ClaudeSessionManage
             "usage": usage_data
         }))),
         Err(e) => {
-            // Fall back to one-time request if persistent session fails  
+            // Fall back to one-time request if persistent session fails
             println!("Persistent session failed, falling back to one-time request: {e}");
             match get_claude_cli_usage().await {
                 Ok(fallback_data) => Ok(HttpResponse::Ok().json(json!({
@@ -3221,7 +3405,7 @@ async fn get_claude_usage_website(session_manager: web::Data<ClaudeSessionManage
                 Err(fallback_e) => Ok(HttpResponse::Ok().json(json!({
                     "success": false,
                     "error": format!("Failed to get Claude usage: {fallback_e}")
-                })))
+                }))),
             }
         }
     }
@@ -3256,34 +3440,38 @@ struct ScrapeResponse {
 
 async fn scrape_site(req: web::Query<ScrapeRequest>) -> Result<HttpResponse> {
     let url = &req.url;
-    
+
     // Basic URL validation
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(HttpResponse::BadRequest().json(json!({
             "error": "Invalid URL format"
         })));
     }
-    
+
     // Build a client with proper headers to mimic a real browser
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|_| actix_web::error::ErrorInternalServerError("Failed to build HTTP client"))?;
-    
+
     // Fetch the page content
     match client.get(url).send().await {
         Ok(response) => {
             if response.status().is_success() {
                 match response.text().await {
                     Ok(html) => {
-                        println!("Successfully fetched URL: {}, HTML length: {}", url, html.len());
-                        
+                        println!(
+                            "Successfully fetched URL: {}, HTML length: {}",
+                            url,
+                            html.len()
+                        );
+
                         // Parse HTML to extract Open Graph data
                         let mut image = None;
                         let mut title = None;
                         let mut description = None;
-                        
+
                         // Simple regex-based parsing for Open Graph tags
                         if let Some(og_image) = extract_meta_property(&html, "og:image") {
                             println!("Found og:image: {}", og_image);
@@ -3294,14 +3482,15 @@ async fn scrape_site(req: web::Query<ScrapeRequest>) -> Result<HttpResponse> {
                                 if let Ok(parsed_url) = url::Url::parse(url) {
                                     if let Some(domain) = parsed_url.domain() {
                                         let scheme = parsed_url.scheme();
-                                        image = Some(format!("{}://{}{}", scheme, domain, og_image));
+                                        image =
+                                            Some(format!("{}://{}{}", scheme, domain, og_image));
                                     }
                                 }
                             } else if og_image.starts_with("http") {
                                 image = Some(og_image);
                             }
                         }
-                        
+
                         // Extract title
                         if let Some(og_title) = extract_meta_property(&html, "og:title") {
                             println!("Found og:title: {}", og_title);
@@ -3310,20 +3499,23 @@ async fn scrape_site(req: web::Query<ScrapeRequest>) -> Result<HttpResponse> {
                             println!("Found HTML title: {}", html_title);
                             title = Some(html_title);
                         }
-                        
+
                         // Extract description
                         if let Some(og_desc) = extract_meta_property(&html, "og:description") {
                             println!("Found og:description: {}", og_desc);
                             description = Some(og_desc);
                         }
-                        
+
                         let response_json = ScrapeResponse {
                             image: image.clone(),
                             title: title.clone(),
                             description: description.clone(),
                         };
-                        
-                        println!("Returning scrape response: image={:?}, title={:?}", image, title);
+
+                        println!(
+                            "Returning scrape response: image={:?}, title={:?}",
+                            image, title
+                        );
                         Ok(HttpResponse::Ok().json(response_json))
                     }
                     Err(err) => {
@@ -3351,21 +3543,27 @@ async fn scrape_site(req: web::Query<ScrapeRequest>) -> Result<HttpResponse> {
 
 // Helper function to extract Open Graph meta property content
 fn extract_meta_property(html: &str, property: &str) -> Option<String> {
-    let pattern = format!(r#"<meta\s+property\s*=\s*["']{}["'][^>]*content\s*=\s*["']([^"']+)["']"#, regex::escape(property));
+    let pattern = format!(
+        r#"<meta\s+property\s*=\s*["']{}["'][^>]*content\s*=\s*["']([^"']+)["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&pattern) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| m.as_str().to_string());
         }
     }
-    
+
     // Try alternative format: content first, then property
-    let pattern_alt = format!(r#"<meta\s+content\s*=\s*["']([^"']+)["'][^>]*property\s*=\s*["']{}["']"#, regex::escape(property));
+    let pattern_alt = format!(
+        r#"<meta\s+content\s*=\s*["']([^"']+)["'][^>]*property\s*=\s*["']{}["']"#,
+        regex::escape(property)
+    );
     if let Ok(re) = regex::Regex::new(&pattern_alt) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| m.as_str().to_string());
         }
     }
-    
+
     None
 }
 
@@ -3405,7 +3603,12 @@ async fn run_git_script(req: HttpRequest, body: web::Json<RunGitRequest>) -> Res
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
-        .or_else(|| req.headers().get("x-github-token").and_then(|v| v.to_str().ok()).map(|s| s.to_string()));
+        .or_else(|| {
+            req.headers()
+                .get("x-github-token")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        });
 
     let token = if let Some(mut t) = header_token {
         // strip common prefixes
@@ -3464,7 +3667,8 @@ async fn run_git_script(req: HttpRequest, body: web::Json<RunGitRequest>) -> Res
     }
 
     // Determine repo dir and script path from env (safe defaults)
-    let repo_dir = std::env::var("WEBROOT_DIR").unwrap_or_else(|_| "/Users/sugandhab/Documents/GitHub/webroot".into());
+    let repo_dir = std::env::var("WEBROOT_DIR")
+        .unwrap_or_else(|_| "/Users/sugandhab/Documents/GitHub/webroot".into());
     let script_path = std::env::var("GIT_SCRIPT_PATH").unwrap_or_else(|_| "./git.sh".into());
 
     // Build command
@@ -3527,30 +3731,28 @@ async fn run_git_script(req: HttpRequest, body: web::Json<RunGitRequest>) -> Res
 async fn main() -> anyhow::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
     let config = Config::from_env()?;
-    
+
     // Check for CLI commands
     let cli = Cli::try_parse();
     match cli {
-        Ok(cli) => {
-            match cli.command {
-                Commands::Serve => {
-                    run_api_server(config).await?;
-                }
-                Commands::InitDb => {
-                    println!("Initializing database...");
-                    let pool = PgPoolOptions::new()
-                        .connect(&config.database_url)
-                        .await
-                        .context("Failed to connect to database for init")?;
-                    init_database(&pool).await?;
-                }
+        Ok(cli) => match cli.command {
+            Commands::Serve => {
+                run_api_server(config).await?;
             }
-        }
+            Commands::InitDb => {
+                println!("Initializing database...");
+                let pool = PgPoolOptions::new()
+                    .connect(&config.database_url)
+                    .await
+                    .context("Failed to connect to database for init")?;
+                init_database(&pool).await?;
+            }
+        },
         Err(_) => {
             // Default to serve if no command is provided
             run_api_server(config).await?;
         }
     }
-    
+
     Ok(())
 }
