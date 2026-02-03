@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder, Result};
+use actix_web::{web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -75,18 +75,22 @@ pub async fn analyze_with_llm(
             Ok(HttpResponse::Ok().json(UnifiedInsightsResponse {
                 success: false,
                 analysis: None,
-                error: Some("OpenAI integration coming soon. Please use Claude or Gemini for now.".to_string()),
+                error: Some(
+                    "OpenAI integration coming soon. Please use Claude or Gemini for now."
+                        .to_string(),
+                ),
                 token_usage: None,
             }))
         }
-        _ => {
-            Ok(HttpResponse::BadRequest().json(UnifiedInsightsResponse {
-                success: false,
-                analysis: None,
-                error: Some(format!("Unsupported model: {}. Supported models: claude, gemini, openai", model_id)),
-                token_usage: None,
-            }))
-        }
+        _ => Ok(HttpResponse::BadRequest().json(UnifiedInsightsResponse {
+            success: false,
+            analysis: None,
+            error: Some(format!(
+                "Unsupported model: {}. Supported models: claude, gemini, openai",
+                model_id
+            )),
+            token_usage: None,
+        })),
     }
 }
 
@@ -94,11 +98,24 @@ pub async fn analyze_with_llm(
 fn format_prompt_with_dataset(prompt: &str, dataset_info: &Option<Value>) -> String {
     if let Some(dataset) = dataset_info {
         // Extract key dataset information
-        let record_count = dataset.get("record_count").and_then(|v| v.as_u64()).unwrap_or(0);
-        let filtered_count = dataset.get("filtered_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let record_count = dataset
+            .get("record_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let filtered_count = dataset
+            .get("filtered_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let sample_data = dataset.get("sample_data");
-        let headers = dataset.get("headers").and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        let headers = dataset
+            .get("headers")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
 
         let sort_info = dataset.get("sort_info");
@@ -120,12 +137,18 @@ fn format_prompt_with_dataset(prompt: &str, dataset_info: &Option<Value>) -> Str
             prompt,
             record_count,
             filtered_count,
-            sample_data.as_ref().and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
+            sample_data
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0),
             headers,
-            sort_info.and_then(|v| v.get("column"))
+            sort_info
+                .and_then(|v| v.get("column"))
                 .and_then(|v| v.as_str())
                 .map(|col| {
-                    let order = sort_info.and_then(|v| v.get("order"))
+                    let order = sort_info
+                        .and_then(|v| v.get("order"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     format!("{} ({})", col, order)
@@ -146,7 +169,8 @@ fn format_filter_info(filter_info: Option<&Value>) -> String {
 
         if let Some(status) = info.get("status_filter").and_then(|v| v.as_array()) {
             if !status.is_empty() {
-                let status_str = status.iter()
+                let status_str = status
+                    .iter()
                     .filter_map(|v| v.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -160,7 +184,11 @@ fn format_filter_info(filter_info: Option<&Value>) -> String {
             }
         }
 
-        if info.get("group_filter").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if info
+            .get("group_filter")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             filters.push("Group participants only".to_string());
         }
 
