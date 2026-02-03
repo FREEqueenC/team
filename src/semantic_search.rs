@@ -1,12 +1,12 @@
 // src/semantic_search.rs
 // Semantic search handler with server-side business logic
 
+use crate::claude_insights;
+use crate::gemini_insights::{self, GeminiAnalysisRequest};
+use crate::prompts::{build_semantic_search_prompt, ProjectData};
+use crate::ApiState;
 use actix_web::{web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
-use crate::prompts::{build_semantic_search_prompt, ProjectData};
-use crate::gemini_insights::{self, GeminiAnalysisRequest};
-use crate::claude_insights::{self, ClaudeAnalysisRequest};
-use crate::ApiState;
 
 /// Request payload for semantic search
 #[derive(Debug, Deserialize)]
@@ -113,7 +113,10 @@ pub async fn search_projects(
     data: web::Data<std::sync::Arc<ApiState>>,
     req: web::Json<SemanticSearchRequest>,
 ) -> Result<HttpResponse> {
-    println!("📡 Semantic search request: query='{}', provider='{}'", req.query, req.provider);
+    println!(
+        "📡 Semantic search request: query='{}', provider='{}'",
+        req.query, req.provider
+    );
 
     // 1. Validate query
     if req.query.trim().is_empty() {
@@ -137,7 +140,9 @@ pub async fn search_projects(
                 matches: None,
                 total_matches: None,
                 search_interpretation: None,
-                error: Some("No projects data provided. Client must send projects array.".to_string()),
+                error: Some(
+                    "No projects data provided. Client must send projects array.".to_string(),
+                ),
                 token_usage: None,
             }));
         }
@@ -147,16 +152,17 @@ pub async fn search_projects(
 
     // 3. Apply filters and select top projects for analysis
     let filtered_projects = apply_filters(&all_projects, &req.filters);
-    let projects_to_analyze = select_projects_for_analysis(&filtered_projects, req.filters.max_results);
+    let projects_to_analyze =
+        select_projects_for_analysis(&filtered_projects, req.filters.max_results);
 
-    println!("📋 Projects selected for analysis: {} of {}", projects_to_analyze.len(), all_projects.len());
+    println!(
+        "📋 Projects selected for analysis: {} of {}",
+        projects_to_analyze.len(),
+        all_projects.len()
+    );
 
     // 4. Build prompt using server-side template
-    let prompt = build_semantic_search_prompt(
-        &req.query,
-        &projects_to_analyze,
-        all_projects.len(),
-    );
+    let prompt = build_semantic_search_prompt(&req.query, &projects_to_analyze, all_projects.len());
 
     println!("📝 Prompt generated: {} characters", prompt.len());
 
@@ -169,7 +175,10 @@ pub async fn search_projects(
             matches: None,
             total_matches: None,
             search_interpretation: None,
-            error: Some(format!("Invalid provider: {}. Use 'gemini' or 'claude'", req.provider)),
+            error: Some(format!(
+                "Invalid provider: {}. Use 'gemini' or 'claude'",
+                req.provider
+            )),
             token_usage: None,
         })),
     }
@@ -177,7 +186,8 @@ pub async fn search_projects(
 
 /// Apply filters to projects
 fn apply_filters(projects: &[ProjectData], filters: &SearchFilters) -> Vec<ProjectData> {
-    projects.iter()
+    projects
+        .iter()
         .filter(|p| {
             // Team filter
             if let Some(ref teams) = filters.teams {
@@ -210,10 +220,7 @@ fn apply_filters(projects: &[ProjectData], filters: &SearchFilters) -> Vec<Proje
 /// - Prioritizing recently updated projects
 /// - Ensuring diverse team representation
 fn select_projects_for_analysis(projects: &[ProjectData], max_results: usize) -> Vec<ProjectData> {
-    projects.iter()
-        .take(max_results)
-        .cloned()
-        .collect()
+    projects.iter().take(max_results).cloned().collect()
 }
 
 /// Call Gemini API for semantic search using existing handler
@@ -227,14 +234,13 @@ async fn call_gemini_for_search(
         data_context: None,
     };
 
-    let response = gemini_insights::analyze_with_gemini(
-        data,
-        web::Json(gemini_request),
-    ).await?;
+    let response = gemini_insights::analyze_with_gemini(data, web::Json(gemini_request)).await?;
 
     // Extract the response body
     if let Ok(body_bytes) = actix_web::body::to_bytes(response.into_body()).await {
-        if let Ok(gemini_response) = serde_json::from_slice::<gemini_insights::GeminiAnalysisResponse>(&body_bytes) {
+        if let Ok(gemini_response) =
+            serde_json::from_slice::<gemini_insights::GeminiAnalysisResponse>(&body_bytes)
+        {
             if gemini_response.success {
                 if let Some(analysis) = gemini_response.analysis {
                     // Parse AI response
@@ -275,14 +281,16 @@ async fn call_gemini_for_search(
         }
     }
 
-    Ok(HttpResponse::InternalServerError().json(SemanticSearchResponse {
-        success: false,
-        matches: None,
-        total_matches: None,
-        search_interpretation: None,
-        error: Some("Failed to parse Gemini response".to_string()),
-        token_usage: None,
-    }))
+    Ok(
+        HttpResponse::InternalServerError().json(SemanticSearchResponse {
+            success: false,
+            matches: None,
+            total_matches: None,
+            search_interpretation: None,
+            error: Some("Failed to parse Gemini response".to_string()),
+            token_usage: None,
+        }),
+    )
 }
 
 /// Call Claude CLI for semantic search
@@ -318,14 +326,16 @@ async fn call_claude_for_search(prompt: &str) -> Result<HttpResponse> {
         }
         Err(e) => {
             eprintln!("❌ Claude CLI call failed: {}", e);
-            Ok(HttpResponse::InternalServerError().json(SemanticSearchResponse {
-                success: false,
-                matches: None,
-                total_matches: None,
-                search_interpretation: None,
-                error: Some(format!("Claude CLI error: {}", e)),
-                token_usage: None,
-            }))
+            Ok(
+                HttpResponse::InternalServerError().json(SemanticSearchResponse {
+                    success: false,
+                    matches: None,
+                    total_matches: None,
+                    search_interpretation: None,
+                    error: Some(format!("Claude CLI error: {}", e)),
+                    token_usage: None,
+                }),
+            )
         }
     }
 }
@@ -340,10 +350,9 @@ fn parse_search_results(analysis: &str) -> anyhow::Result<(Vec<SearchMatch>, usi
     json_text = json_text.replace("```json", "").replace("```", "");
 
     // Try to find JSON object
-    let json_match = json_text.find('{')
-        .and_then(|start| {
-            json_text.rfind('}').map(|end| &json_text[start..=end])
-        })
+    let json_match = json_text
+        .find('{')
+        .and_then(|start| json_text.rfind('}').map(|end| &json_text[start..=end]))
         .ok_or_else(|| anyhow::anyhow!("No JSON found in response"))?;
 
     // Parse JSON

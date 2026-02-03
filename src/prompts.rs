@@ -33,8 +33,7 @@ pub fn build_semantic_search_prompt(
     projects: &[ProjectData],
     total_projects: usize,
 ) -> String {
-    let projects_json = serde_json::to_string_pretty(projects)
-        .unwrap_or_else(|_| "[]".to_string());
+    let projects_json = serde_json::to_string_pretty(projects).unwrap_or_else(|_| "[]".to_string());
 
     format!(
         r#"You are a semantic search engine for project feeds. Analyze the user's query and return ONLY the matching projects.
@@ -83,15 +82,12 @@ Return ONLY valid JSON. No markdown, no code blocks, just JSON."#,
 ///
 /// # Returns
 /// Formatted prompt with dataset context
-pub fn build_data_analysis_prompt(
-    custom_prompt: &str,
-    dataset_info: &serde_json::Value,
-) -> String {
+#[allow(dead_code)]
+pub fn build_data_analysis_prompt(custom_prompt: &str, dataset_info: &serde_json::Value) -> String {
     format!(
         "{}\n\nDataset Context:\n{}",
         custom_prompt,
-        serde_json::to_string_pretty(dataset_info)
-            .unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(dataset_info).unwrap_or_else(|_| "{}".to_string())
     )
 }
 
@@ -101,22 +97,16 @@ mod tests {
 
     #[test]
     fn test_semantic_search_prompt_generation() {
-        let projects = vec![
-            ProjectData {
-                title: "Green Energy".to_string(),
-                description: "Solar power initiative".to_string(),
-                team: Some("Engineering".to_string()),
-                status: Some("Active".to_string()),
-                tags: Some("sustainability".to_string()),
-                url: Some("https://example.com".to_string()),
-            }
-        ];
+        let projects = vec![ProjectData {
+            title: "Green Energy".to_string(),
+            description: "Solar power initiative".to_string(),
+            team: Some("Engineering".to_string()),
+            status: Some("Active".to_string()),
+            tags: Some("sustainability".to_string()),
+            url: Some("https://example.com".to_string()),
+        }];
 
-        let prompt = build_semantic_search_prompt(
-            "sustainability projects",
-            &projects,
-            100
-        );
+        let prompt = build_semantic_search_prompt("sustainability projects", &projects, 100);
 
         assert!(prompt.contains("sustainability projects"));
         assert!(prompt.contains("1 of 100 total"));
@@ -130,10 +120,7 @@ mod tests {
             "sample_data": []
         });
 
-        let prompt = build_data_analysis_prompt(
-            "Analyze this data",
-            &dataset
-        );
+        let prompt = build_data_analysis_prompt("Analyze this data", &dataset);
 
         assert!(prompt.contains("Analyze this data"));
         assert!(prompt.contains("Dataset Context"));
