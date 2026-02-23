@@ -2289,6 +2289,143 @@ async fn create_project(
     }
 }
 
+// CRM CRM CRUD Handlers
+
+// Accounts
+async fn get_accounts(data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
+    let db = match &data.db {
+        Some(db) => db,
+        None => {
+            return Ok(HttpResponse::ServiceUnavailable().json(json!({ "error": "Database not available" })));
+        }
+    };
+
+    let rows = sqlx::query("SELECT id, name, account_type, industry, phone_office, website, date_entered, date_modified FROM accounts ORDER BY date_modified DESC")
+        .fetch_all(db)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+
+    let accounts: Vec<serde_json::Value> = rows.into_iter().map(|row| json!({
+        "id": row.get::<Uuid, _>("id"),
+        "name": row.get::<Option<String>, _>("name"),
+        "account_type": row.get::<Option<String>, _>("account_type"),
+        "industry": row.get::<Option<String>, _>("industry"),
+        "phone_office": row.get::<Option<String>, _>("phone_office"),
+        "website": row.get::<Option<String>, _>("website"),
+        "date_entered": row.get::<chrono::DateTime<Utc>, _>("date_entered"),
+        "date_modified": row.get::<chrono::DateTime<Utc>, _>("date_modified")
+    })).collect();
+
+    Ok(HttpResponse::Ok().json(json!({ "success": true, "data": accounts })))
+}
+
+#[derive(Deserialize)]
+struct CreateAccountRequest {
+    name: String,
+    account_type: Option<String>,
+    industry: Option<String>,
+    phone_office: Option<String>,
+    website: Option<String>,
+}
+
+async fn create_account(data: web::Data<Arc<ApiState>>, req: web::Json<CreateAccountRequest>) -> Result<HttpResponse> {
+    let db = match &data.db {
+        Some(db) => db,
+        None => {
+            return Ok(HttpResponse::ServiceUnavailable().json(json!({ "error": "Database not available" })));
+        }
+    };
+
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+
+    sqlx::query(
+        "INSERT INTO accounts (id, name, account_type, industry, phone_office, website, date_entered, date_modified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+    )
+    .bind(id)
+    .bind(&req.name)
+    .bind(&req.account_type)
+    .bind(&req.industry)
+    .bind(&req.phone_office)
+    .bind(&req.website)
+    .bind(now)
+    .bind(now)
+    .execute(db)
+    .await
+    .map_err(|e| actix_web::error::ErrorBadRequest(e))?;
+
+    Ok(HttpResponse::Created().json(json!({ "success": true, "id": id, "message": "Account created successfully" })))
+}
+
+// Contacts
+async fn get_contacts(data: web::Data<Arc<ApiState>>) -> Result<HttpResponse> {
+    let db = match &data.db {
+        Some(db) => db,
+        None => {
+            return Ok(HttpResponse::ServiceUnavailable().json(json!({ "error": "Database not available" })));
+        }
+    };
+
+    let rows = sqlx::query("SELECT id, first_name, last_name, title, email, phone_work, account_id, date_entered, date_modified FROM contacts ORDER BY date_modified DESC")
+        .fetch_all(db)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+
+    let contacts: Vec<serde_json::Value> = rows.into_iter().map(|row| json!({
+        "id": row.get::<Uuid, _>("id"),
+        "first_name": row.get::<Option<String>, _>("first_name"),
+        "last_name": row.get::<Option<String>, _>("last_name"),
+        "title": row.get::<Option<String>, _>("title"),
+        "email": row.get::<Option<String>, _>("email"),
+        "phone_work": row.get::<Option<String>, _>("phone_work"),
+        "account_id": row.get::<Option<Uuid>, _>("account_id"),
+        "date_entered": row.get::<chrono::DateTime<Utc>, _>("date_entered"),
+        "date_modified": row.get::<chrono::DateTime<Utc>, _>("date_modified")
+    })).collect();
+
+    Ok(HttpResponse::Ok().json(json!({ "success": true, "data": contacts })))
+}
+
+#[derive(Deserialize)]
+struct CreateContactRequest {
+    first_name: Option<String>,
+    last_name: String,
+    title: Option<String>,
+    email: Option<String>,
+    phone_work: Option<String>,
+    account_id: Option<Uuid>,
+}
+
+async fn create_contact(data: web::Data<Arc<ApiState>>, req: web::Json<CreateContactRequest>) -> Result<HttpResponse> {
+    let db = match &data.db {
+        Some(db) => db,
+        None => {
+            return Ok(HttpResponse::ServiceUnavailable().json(json!({ "error": "Database not available" })));
+        }
+    };
+
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+
+    sqlx::query(
+        "INSERT INTO contacts (id, first_name, last_name, title, email, phone_work, account_id, date_entered, date_modified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+    )
+    .bind(id)
+    .bind(&req.first_name)
+    .bind(&req.last_name)
+    .bind(&req.title)
+    .bind(&req.email)
+    .bind(&req.phone_work)
+    .bind(req.account_id)
+    .bind(now)
+    .bind(now)
+    .execute(db)
+    .await
+    .map_err(|e| actix_web::error::ErrorBadRequest(e))?;
+
+    Ok(HttpResponse::Created().json(json!({ "success": true, "id": id, "message": "Contact created successfully" })))
+}
+
 // Initialize database schema (simplified version with core tables)
 async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create users table
@@ -3078,6 +3215,10 @@ async fn run_api_server(config: Config) -> anyhow::Result<()> {
                     .route("/tables/mock", web::get().to(get_tables_mock))
                     .route("/projects", web::get().to(get_projects))
                     .route("/projects", web::post().to(create_project))
+                    .route("/accounts", web::get().to(get_accounts))
+                    .route("/accounts", web::post().to(create_account))
+                    .route("/contacts", web::get().to(get_contacts))
+                    .route("/contacts", web::post().to(create_contact))
                     .service(
                         web::scope("/db")
                             .route("/test-connection", web::get().to(db_test_connection))
