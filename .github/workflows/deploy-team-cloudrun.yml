@@ -82,22 +82,23 @@ jobs:
             GOOGLE_ORG_ID=${{ secrets.GCP_ORG_ID }}
             GOOGLE_USER_EMAIL=${{ secrets.GCP_USER_EMAIL }}
             GOOGLE_BILLING_ID=${{ secrets.GCP_BILLING_ID }}
+            DATABASE_URL=${{ secrets.PARTNER_TOOLS_DATABASE_URL }}
+            COMMONS_HOST=${{ secrets.COMMONS_DB_HOST }}
+            COMMONS_PORT=${{ secrets.COMMONS_DB_PORT }}
+            COMMONS_NAME=${{ secrets.COMMONS_DB_NAME }}
+            COMMONS_USER=${{ secrets.COMMONS_DB_USER }}
+            COMMONS_PASSWORD=${{ secrets.COMMONS_DB_PASSWORD }}
+            COMMONS_SSL_MODE=${{ secrets.COMMONS_DB_SSL_MODE }}
+            EXIOBASE_HOST=${{ secrets.EXIOBASE_DB_HOST }}
+            EXIOBASE_NAME=${{ secrets.EXIOBASE_DB_NAME }}
+            EXIOBASE_USER=${{ secrets.EXIOBASE_DB_USER }}
+            EXIOBASE_PASSWORD=${{ secrets.EXIOBASE_DB_PASSWORD }}
+            EXIOBASE_SSL_MODE=${{ secrets.EXIOBASE_DB_SSL_MODE }}
           secrets: |
             GEMINI_API_KEY=GEMINI_API_KEY:latest
-            DATABASE_URL=PARTNER_TOOLS_DATABASE_URL:latest
-            COMMONS_HOST=COMMONS_DB_HOST:latest
-            COMMONS_PORT=COMMONS_DB_PORT:latest
-            COMMONS_NAME=COMMONS_DB_NAME:latest
-            COMMONS_USER=COMMONS_DB_USER:latest
-            COMMONS_PASSWORD=COMMONS_DB_PASSWORD:latest
-            COMMONS_SSL_MODE=COMMONS_DB_SSL_MODE:latest
-            EXIOBASE_HOST=EXIOBASE_DB_HOST:latest
-            EXIOBASE_NAME=EXIOBASE_DB_NAME:latest
-            EXIOBASE_USER=EXIOBASE_DB_USER:latest
-            EXIOBASE_PASSWORD=EXIOBASE_DB_PASSWORD:latest
-            EXIOBASE_SSL_MODE=EXIOBASE_DB_SSL_MODE:latest
-            GITHUB_PERSONAL_ACCESS_TOKEN=PARTNER_TOOLS_GH_TOKEN:latest
+            PARTNER_TOOLS_GH_TOKEN=PARTNER_TOOLS_GH_TOKEN:latest
             GOOGLE_SERVICE_KEY=GCP_SERVICE_KEY:latest
+
 
       # ── 6. Print the live URL ──────────────────────────────────────────────
       - name: Show deployed URL
