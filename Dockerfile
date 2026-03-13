@@ -1,26 +1,43 @@
-# Development Dockerfile for Rust API
-FROM rust:1.91-slim-bookworm
+# Multi-stage Dockerfile for production-ready Rust API
+# Stage 1: Build the application
+FROM rust:1.81-slim-bookworm AS builder
 
-# Install system dependencies
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libpq-dev \
-    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+# Build the application in release mode
+RUN cargo build --release --bin partner_tools
+
+# Stage 2: Create a slim runtime image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app/team
+WORKDIR /app
 
-# Copy actual source code
-COPY . .
+# Copy the binary from the builder stage
+COPY --from=builder /app/target/release/partner_tools /app/partner_tools
+# Copy any necessary runtime configuration or static files
+COPY config/ /app/config/
+COPY admin/ /app/admin/
+COPY projects/ /app/projects/
 
-# Build the application
-RUN cargo build --release
-
-# Expose API port
+# Expose the API port (Cloud Run will inject $PORT, but the app uses 8081)
 EXPOSE 8081
 
 # Run the API server
-CMD ["cargo", "run", "--release", "--bin", "partner_tools", "--", "serve"]
+# We use the 'serve' command as specified in the original Dockerfile
+CMD ["/app/partner_tools", "serve"]
