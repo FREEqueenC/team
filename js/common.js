@@ -210,12 +210,12 @@ function getApiBase() {
         if (pullLocalRust === 'false') {
             return remoteApiUrl;
         }
-        return 'http://localhost:8081/api';
+        return 'https://partner-tools-mo6awxfnha-uc.a.run.app/api';
     }
 
     // On external domains (GitHub Pages, etc.), default to remote API
     if (pullLocalRust === 'true') {
-        return 'http://localhost:8081/api';
+        return 'https://partner-tools-mo6awxfnha-uc.a.run.app/api';
     }
 
     return remoteApiUrl;
@@ -1849,7 +1849,7 @@ async function updateRustApiStatusPanel(showConfigureLink = true, adminPath = 'a
 
     try {
         // Check if backend API is running
-        const healthResponse = await fetch('http://localhost:8081/api/health', {
+        const healthResponse = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/health', {
             method: 'GET',
             timeout: 5000
         });
@@ -2105,7 +2105,7 @@ function updateStatusIndicator(indicatorId, textId, isActive, activeText, inacti
 // Function to check a single database connection
 async function checkDatabaseConnection(endpoint, indicatorId, textId, activeText, inactiveText) {
     try {
-        const response = await fetch(`http://localhost:8081/api/db/${endpoint}`);
+        const response = await fetch(`https://partner-tools-mo6awxfnha-uc.a.run.app/api/db/${endpoint}`);
         const result = await response.json();
         updateStatusIndicator(indicatorId, textId, result.success, activeText, inactiveText);
         return result.success;
@@ -2167,7 +2167,7 @@ function toggleLocalhostFallback(checkbox) {
     } else {
         // Disable fallback
         API_BASE = window.location.origin.includes('localhost')
-            ? 'http://localhost:8081/api'
+            ? 'https://partner-tools-mo6awxfnha-uc.a.run.app/api'
             : `${window.location.origin}/api`;
         showNotification('⚠️ Localhost fallback disabled. Page will reload.', 'info');
     }
@@ -2190,7 +2190,7 @@ async function stopRustServer() {
     
     try {
         // Call the Rust API restart endpoint which performs a clean shutdown
-        const response = await fetch('http://localhost:8081/api/config/restart', {
+        const response = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/config/restart', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

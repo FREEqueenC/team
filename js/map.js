@@ -1126,7 +1126,7 @@ Do not include any explanation or additional text.`;
             apiUrl = apiPath;
         } else {
             // Relative paths are resolved to local API server
-            apiUrl = `http://localhost:8081${apiPath}`;
+            apiUrl = `https://partner-tools-mo6awxfnha-uc.a.run.app${apiPath}`;
         }
 
         console.log('Fetching data from API:', apiUrl);
