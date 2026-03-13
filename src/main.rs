@@ -2432,6 +2432,9 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     println!("Cleaning up existing tables...");
     // Drop tables in reverse order of dependencies
     let drop_queries = [
+        "DROP TABLE IF EXISTS campaigns_leads CASCADE",
+        "DROP TABLE IF EXISTS projects_contacts CASCADE",
+        "DROP TABLE IF EXISTS projects_accounts CASCADE",
         "DROP TABLE IF EXISTS contacts_opportunities CASCADE",
         "DROP TABLE IF EXISTS accounts_opportunities CASCADE",
         "DROP TABLE IF EXISTS accounts_contacts CASCADE",
@@ -2460,14 +2463,34 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE users (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            id VARCHAR(36) PRIMARY KEY,
             user_name VARCHAR(60),
             first_name VARCHAR(30),
             last_name VARCHAR(30),
             email VARCHAR(100),
             status VARCHAR(100),
+            is_admin BOOLEAN DEFAULT FALSE,
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create campaigns table
+    sqlx::query(
+        r#"
+        CREATE TABLE campaigns (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
+            status VARCHAR(100),
+            campaign_type VARCHAR(100),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            modified_user_id VARCHAR(36),
+            created_by VARCHAR(36),
+            assigned_user_id VARCHAR(36)
         )
         "#,
     )
@@ -2477,9 +2500,9 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create accounts table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS accounts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(150),
+        CREATE TABLE accounts (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
             account_type VARCHAR(50),
             industry VARCHAR(50),
             phone_office VARCHAR(100),
@@ -2487,7 +2510,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36),
-            modified_user_id VARCHAR(36)
+            modified_user_id VARCHAR(36),
+            assigned_user_id VARCHAR(36),
+            parent_id VARCHAR(36),
+            campaign_id VARCHAR(36),
+            description TEXT
         )
         "#,
     )
@@ -2497,14 +2524,14 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create contacts table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS contacts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        CREATE TABLE contacts (
+            id VARCHAR(36) PRIMARY KEY,
             salutation VARCHAR(255),
             first_name VARCHAR(100),
             last_name VARCHAR(100),
             title VARCHAR(100),
             department VARCHAR(255),
-            account_id UUID REFERENCES accounts(id),
+            account_id VARCHAR(36),
             phone_work VARCHAR(100),
             phone_mobile VARCHAR(100),
             email VARCHAR(100),
@@ -2517,7 +2544,8 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36),
-            modified_user_id VARCHAR(36)
+            modified_user_id VARCHAR(36),
+            assigned_user_id VARCHAR(36)
         )
         "#,
     )
@@ -2527,18 +2555,19 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create projects table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS projects (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(50),
+        CREATE TABLE projects (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
             description TEXT,
-            status VARCHAR(50),
-            priority VARCHAR(255),
+            status VARCHAR(100),
+            priority VARCHAR(100),
             estimated_start_date DATE,
             estimated_end_date DATE,
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36),
-            modified_user_id VARCHAR(36)
+            modified_user_id VARCHAR(36),
+            assigned_user_id VARCHAR(36)
         )
         "#,
     )
