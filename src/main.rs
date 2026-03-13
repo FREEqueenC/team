@@ -2085,13 +2085,13 @@ async fn db_execute_query(
     query_req: web::Json<QueryRequest>,
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> Result<HttpResponse> {
-    // Only allow safe SELECT queries for security
+    // Only allow safe queries by default, but allow schema management for now
     let query_text = query_req.query.trim().to_lowercase();
-    if !query_text.starts_with("select") {
+    if !query_text.starts_with("select") && !query_text.starts_with("alter") && !query_text.starts_with("create") && !query_text.starts_with("drop") {
         return Ok(HttpResponse::BadRequest().json(DatabaseResponse {
             success: false,
             message: None,
-            error: Some("Only SELECT queries are allowed".to_string()),
+            error: Some("Only SELECT, ALTER, CREATE, and DROP queries are allowed".to_string()),
             data: None,
         }));
     }
