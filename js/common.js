@@ -197,29 +197,28 @@ function updateFaviconPath() {
 
 // API Configuration with localhost fallback for external domains
 function getApiBase() {
-    // Check if user has disabled localhost fallback
-    const pullLocalRust = localStorage.getItem('pullLocalRust');
-    if (pullLocalRust === 'false') {
-        // Fallback disabled, use current domain
-        return window.location.origin.includes('localhost')
-            ? 'http://localhost:8081/api'
-            : `${window.location.origin}/api`;
-    }
+    // Live Cloud Run URL
+    const remoteApiUrl = 'https://partner-tools-233706639439.us-central1.run.app/api';
 
-    // Default behavior: always try localhost first when on external domains
+    // Check if user has explicitly chosen to use local or remote
+    const pullLocalRust = localStorage.getItem('pullLocalRust');
+    
+    // If we are on localhost, default to local API
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
-    if (!isLocalhost) {
-        // On external domain (model.earth, dreamstudio.com, etc.)
-        // Enable pullLocalRust flag to indicate we're using localhost fallback
-        if (pullLocalRust === null) {
-            localStorage.setItem('pullLocalRust', 'true');
+    if (isLocalhost) {
+        if (pullLocalRust === 'false') {
+            return remoteApiUrl;
         }
         return 'http://localhost:8081/api';
     }
 
-    // On localhost, use localhost
-    return 'http://localhost:8081/api';
+    // On external domains (GitHub Pages, etc.), default to remote API
+    if (pullLocalRust === 'true') {
+        return 'http://localhost:8081/api';
+    }
+
+    return remoteApiUrl;
 }
 
 if (typeof API_BASE === 'undefined') {
