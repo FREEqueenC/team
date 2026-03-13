@@ -113,7 +113,7 @@ async function storeFallbackCSV(csvText) {
     // Store CSV data to local fallback file using Rust API endpoint or local storage
     try {
         // Try to use the Rust API endpoint to save the file (if available)
-        const saveResponse = await fetch('http://localhost:8081/api/files/csv', {
+        const saveResponse = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/files/csv', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -486,7 +486,7 @@ function clearMessages(statusMessages = null) {
 // API UTILITIES
 // =============================================================================
 
-async function fetchListFeed(url, options = {}, forceCorsProxy = false, API_BASE = 'http://localhost:8081/api') {
+async function fetchListFeed(url, options = {}, forceCorsProxy = false, API_BASE = 'https://partner-tools-mo6awxfnha-uc.a.run.app/api') {
     // Check if we're on model.earth domain (allow-listed for direct access)
     const isModelEarthDomain = window.location.hostname.includes('model.earth');
     if ((isModelEarthDomain) && !forceCorsProxy) {
@@ -1388,7 +1388,7 @@ function applyIntRequiredFilter(data, config) {
 
 // Unified data loading function that handles JSON, RSS, CSV, and Excel formats
 async function loadUnifiedData(url, options = {}) {
-    const { forceCorsProxy = false, API_BASE = 'http://localhost:8081/api', allFields = null, config = null, forceCSV = false } = options;
+    const { forceCorsProxy = false, API_BASE = 'https://partner-tools-mo6awxfnha-uc.a.run.app/api', allFields = null, config = null, forceCSV = false } = options;
 
     try {
         console.log('=== LOAD UNIFIED DATA DEBUG ===');

@@ -36,7 +36,7 @@
             
             try {
                 // Fetch config from server
-                const response = await fetch('http://localhost:8081/api/config/current');
+                const response = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/config/current');
                 log.innerHTML += `<p>Response status: ${response.status}</p>`;
                 
                 if (response.ok) {

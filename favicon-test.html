@@ -102,7 +102,7 @@
         async function testConfigFetch() {
             addToLog('=== Config Fetch Test ===', 'log');
             try {
-                const response = await fetch('http://localhost:8081/api/config/current');
+                const response = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/config/current');
                 addToLog(`Response status: ${response.status}`, 'log');
                 if (response.ok) {
                     const config = await response.json();

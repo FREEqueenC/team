@@ -2,9 +2,9 @@
 class DatabaseAdmin {
     constructor() {
         // Use config from settings.js if available, otherwise fallback
-        this.apiBaseUrl = (typeof CONFIG !== 'undefined' && CONFIG.API) 
-            ? CONFIG.API.BASE_URL 
-            : 'http://localhost:8081/api';
+        this.apiBaseUrl = (typeof API_BASE !== 'undefined') 
+            ? API_BASE 
+            : ((typeof CONFIG !== 'undefined' && CONFIG.API) ? CONFIG.API.BASE_URL : 'https://partner-tools-mo6awxfnha-uc.a.run.app/api');
         this.log = [];
         this.envConfig = null;
         this.selectedConnection = 'COMMONS'; // Default to COMMONS

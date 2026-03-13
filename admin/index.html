@@ -571,7 +571,7 @@
 
         // Check system status
         async function checkSystemStatus() {
-            const API_BASE = 'http://localhost:8081/api';
+            const API_BASE = 'https://partner-tools-mo6awxfnha-uc.a.run.app/api';
             let dbConnected = false;
             let apiConnected = false;
             
@@ -626,8 +626,8 @@
 
             try {
                 const [cliResponse, websiteResponse] = await Promise.all([
-                    fetch(`http://localhost:8081/api/${apiType}/usage/cli`).catch(e => e),
-                    fetch(`http://localhost:8081/api/${apiType}/usage/website`).catch(e => e)
+                    fetch(`https://partner-tools-mo6awxfnha-uc.a.run.app/api/${apiType}/usage/cli`).catch(e => e),
+                    fetch(`https://partner-tools-mo6awxfnha-uc.a.run.app/api/${apiType}/usage/website`).catch(e => e)
                 ]);
 
                 if (cliResponse instanceof Response && cliResponse.ok) {

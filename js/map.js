@@ -552,7 +552,7 @@ Do not include any explanation or additional text.`;
 
         try {
             // Try Gemini first
-            const geminiResponse = await fetch('http://localhost:8081/api/gemini/analyze', {
+            const geminiResponse = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/gemini/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt })
@@ -570,7 +570,7 @@ Do not include any explanation or additional text.`;
             }
 
             // Fallback to Claude
-            const claudeResponse = await fetch('http://localhost:8081/api/claude/analyze', {
+            const claudeResponse = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/claude/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ prompt })
@@ -1018,7 +1018,7 @@ Do not include any explanation or additional text.`;
 
     async saveUpdatedDataset(data, localFilePath) {
         try {
-            const response = await fetch('http://localhost:8081/api/save-dataset', {
+            const response = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/save-dataset', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1119,7 +1119,7 @@ Do not include any explanation or additional text.`;
             // Cognito Forms URLs should be proxied through our Rust API server
             // which will add authentication - use the generic proxy endpoint
             const encodedUrl = encodeURIComponent(apiPath);
-            apiUrl = `http://localhost:8081/api/cognito/proxy?url=${encodedUrl}`;
+            apiUrl = `https://partner-tools-mo6awxfnha-uc.a.run.app/api/cognito/proxy?url=${encodedUrl}`;
             console.log('Proxying Cognito Forms request:', apiPath, '→', apiUrl);
         } else if (apiPath.startsWith('http')) {
             // Other external URLs are called directly
@@ -1280,7 +1280,7 @@ Do not include any explanation or additional text.`;
             }
 
             // Call the Rust endpoint to refresh the local file
-            const response = await fetch('http://localhost:8081/api/refresh-local', {
+            const response = await fetch('https://partner-tools-mo6awxfnha-uc.a.run.app/api/refresh-local', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1383,7 +1383,7 @@ Do not include any explanation or additional text.`;
                         <li>This may be due to certificate validation or network restrictions</li>
                         <li>Test from server: <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">curl https://www.cognitoforms.com/api/forms</code></li>
                         ` : ''}
-                        <li>Verify server is running: <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">curl http://localhost:8081/api/health</code></li>
+                        <li>Verify server is running: <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">curl https://partner-tools-mo6awxfnha-uc.a.run.app/api/health</code></li>
                         <li>Check API credentials in <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">docker/.env</code></li>
                         <li>Check server logs: <code style="background: #e9ecef; padding: 2px 6px; border-radius: 3px;">tail -f server.log</code></li>
                     </ul>

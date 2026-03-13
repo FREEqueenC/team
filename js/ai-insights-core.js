@@ -47,7 +47,7 @@ class AIInsightsComponent {
             displayMode: 'analysis', // 'analysis' or 'search-results'
 
             // API
-            apiBase: window.API_BASE || 'http://localhost:8081/api',
+            apiBase: window.API_BASE || 'https://partner-tools-mo6awxfnha-uc.a.run.app/api',
 
             // Cache
             cachePrefix: 'aiInsights',

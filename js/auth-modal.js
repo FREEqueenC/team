@@ -306,7 +306,7 @@ class AuthModal {
             // For localhost development, use the local backend
             if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
                 // Redirect to backend OAuth endpoint
-                const response = await fetch(`http://localhost:8081/api/auth/${provider}/url`);
+                const response = await fetch(`https://partner-tools-mo6awxfnha-uc.a.run.app/api/auth/${provider}/url`);
                 if (response.ok) {
                     const result = await response.json();
                     if (result.auth_url) {
