@@ -198,7 +198,7 @@ function updateFaviconPath() {
 // API Configuration with localhost fallback for external domains
 function getApiBase() {
     // Live Cloud Run URL
-    const remoteApiUrl = 'https://partner-tools-233706639439.us-central1.run.app/api';
+    const remoteApiUrl = 'https://partner-tools-mo6awxfnha-uc.a.run.app/api';
 
     // Check if user has explicitly chosen to use local or remote
     const pullLocalRust = localStorage.getItem('pullLocalRust');
