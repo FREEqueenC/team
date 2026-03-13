@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for production-ready Rust API
 # Stage 1: Build the application
-FROM rust:1.81-slim-bookworm AS builder
+FROM rust:1.91-slim-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
