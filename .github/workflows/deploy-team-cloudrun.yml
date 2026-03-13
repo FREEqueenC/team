@@ -67,7 +67,6 @@ jobs:
           flags: >-
             --platform=managed
             --allow-unauthenticated
-            --port=8081
             --cpu=1
             --memory=512Mi
             --min-instances=0
