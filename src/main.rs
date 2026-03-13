@@ -67,7 +67,8 @@ impl Config {
                     .unwrap_or_else(|_| "dummy_key".to_string()),
                 server_host: std::env::var("SERVER_HOST")
                     .unwrap_or_else(|_| "127.0.0.1".to_string()),
-                server_port: std::env::var("SERVER_PORT")
+                server_port: std::env::var("PORT")
+                    .or_else(|_| std::env::var("SERVER_PORT"))
                     .unwrap_or_else(|_| "8081".to_string())
                     .parse()
                     .unwrap_or(8081),
