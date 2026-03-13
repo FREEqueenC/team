@@ -2428,10 +2428,37 @@ async fn create_contact(data: web::Data<Arc<ApiState>>, req: web::Json<CreateCon
 
 // Initialize database schema (simplified version with core tables)
 async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
+    println!("Cleaning up existing tables...");
+    // Drop tables in reverse order of dependencies
+    let drop_queries = [
+        "DROP TABLE IF EXISTS contacts_opportunities CASCADE",
+        "DROP TABLE IF EXISTS accounts_opportunities CASCADE",
+        "DROP TABLE IF EXISTS accounts_contacts CASCADE",
+        "DROP TABLE IF EXISTS users_roles CASCADE",
+        "DROP TABLE IF EXISTS taggables CASCADE",
+        "DROP TABLE IF EXISTS tags CASCADE",
+        "DROP TABLE IF EXISTS surveyquestionoptions CASCADE",
+        "DROP TABLE IF EXISTS surveyquestions CASCADE",
+        "DROP TABLE IF EXISTS roles CASCADE",
+        "DROP TABLE IF EXISTS campaigns CASCADE",
+        "DROP TABLE IF EXISTS leads CASCADE",
+        "DROP TABLE IF EXISTS activities CASCADE",
+        "DROP TABLE IF EXISTS opportunities CASCADE",
+        "DROP TABLE IF EXISTS projects CASCADE",
+        "DROP TABLE IF EXISTS contacts CASCADE",
+        "DROP TABLE IF EXISTS accounts CASCADE",
+        "DROP TABLE IF EXISTS users CASCADE",
+    ];
+
+    for query in drop_queries {
+        sqlx::query(query).execute(pool).await?;
+    }
+
+    println!("Creating tables...");
     // Create users table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_name VARCHAR(60),
             first_name VARCHAR(30),
