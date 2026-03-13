@@ -74,6 +74,7 @@ jobs:
             --max-instances=3
             --concurrency=80
             --timeout=300
+            --service-account=${{ secrets.GCP_SERVICE_ACCOUNT }}
           env_vars: |
             SERVER_HOST=0.0.0.0
             SERVER_PORT=8081
