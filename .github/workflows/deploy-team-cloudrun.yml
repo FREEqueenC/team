@@ -93,6 +93,12 @@ jobs:
             EXIOBASE_USER=${{ secrets.EXIOBASE_DB_USER }}
             EXIOBASE_PASSWORD=${{ secrets.EXIOBASE_DB_PASSWORD }}
             EXIOBASE_SSL_MODE=${{ secrets.EXIOBASE_DB_SSL_MODE }}
+            LOCATIONS_HOST=${{ secrets.COMMONS_DB_HOST }}
+            LOCATIONS_PORT=${{ secrets.COMMONS_DB_PORT }}
+            LOCATIONS_NAME=${{ secrets.COMMONS_DB_NAME }}
+            LOCATIONS_USER=${{ secrets.COMMONS_DB_USER }}
+            LOCATIONS_PASSWORD=${{ secrets.COMMONS_DB_PASSWORD }}
+            LOCATIONS_SSL_MODE=${{ secrets.COMMONS_DB_SSL_MODE }}
           secrets: |
             GEMINI_API_KEY=GEMINI_API_KEY:latest
             PARTNER_TOOLS_GH_TOKEN=PARTNER_TOOLS_GH_TOKEN:latest
