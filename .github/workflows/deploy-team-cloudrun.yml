@@ -1,0 +1,103 @@
+name: Deploy PartnerTools to Cloud Run
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:  # allow manual trigger from GitHub Actions UI
+
+env:
+  PROJECT_ID: anw-aetheric-envoy
+  REGION: us-central1
+  SERVICE_NAME: partner-tools
+  REGISTRY: us-central1-docker.pkg.dev
+  IMAGE_REPO: partner-tools-repo  # Artifact Registry repo name
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  deploy:
+    name: Build, Push & Deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write  # REQUIRED for GitHub OIDC to request a GCP token
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate to GCP via Workload Identity Federation ───────────
+      #   No service-account key stored anywhere — pure OIDC.
+      #   Required GitHub secrets:
+      #     GCP_WORKLOAD_IDENTITY_PROVIDER  — full provider resource name
+      #     GCP_SERVICE_ACCOUNT            — deployer SA email
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # ── 3. Configure Docker to push to Artifact Registry ──────────────────
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      # ── 4. Build & push Docker image ──────────────────────────────────────
+      - name: Build and push Docker image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_REPO }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build \
+            --tag "$IMAGE" \
+            --tag "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_REPO }}/${{ env.SERVICE_NAME }}:latest" \
+            .
+          docker push "$IMAGE"
+          docker push "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_REPO }}/${{ env.SERVICE_NAME }}:latest"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      # ── 5. Deploy to Cloud Run ─────────────────────────────────────────────
+      #   All application secrets are injected as env vars from GitHub secrets.
+      #   Port 8081 matches the Dockerfile EXPOSE and actix-web SERVER_PORT.
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.IMAGE }}
+          flags: >-
+            --platform=managed
+            --allow-unauthenticated
+            --port=8081
+            --cpu=1
+            --memory=512Mi
+            --min-instances=0
+            --max-instances=3
+            --concurrency=80
+            --timeout=300
+          env_vars: |
+            SERVER_HOST=0.0.0.0
+            SERVER_PORT=8081
+            GOOGLE_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
+            GOOGLE_ORG_ID=${{ secrets.GCP_ORG_ID }}
+            GOOGLE_USER_EMAIL=${{ secrets.GCP_USER_EMAIL }}
+            GOOGLE_BILLING_ID=${{ secrets.GCP_BILLING_ID }}
+          secrets: |
+            GEMINI_API_KEY=GEMINI_API_KEY:latest
+            DATABASE_URL=PARTNER_TOOLS_DATABASE_URL:latest
+            COMMONS_HOST=COMMONS_DB_HOST:latest
+            COMMONS_PORT=COMMONS_DB_PORT:latest
+            COMMONS_NAME=COMMONS_DB_NAME:latest
+            COMMONS_USER=COMMONS_DB_USER:latest
+            COMMONS_PASSWORD=COMMONS_DB_PASSWORD:latest
+            COMMONS_SSL_MODE=COMMONS_DB_SSL_MODE:latest
+            EXIOBASE_HOST=EXIOBASE_DB_HOST:latest
+            EXIOBASE_NAME=EXIOBASE_DB_NAME:latest
+            EXIOBASE_USER=EXIOBASE_DB_USER:latest
+            EXIOBASE_PASSWORD=EXIOBASE_DB_PASSWORD:latest
+            EXIOBASE_SSL_MODE=EXIOBASE_DB_SSL_MODE:latest
+            GITHUB_PERSONAL_ACCESS_TOKEN=PARTNER_TOOLS_GH_TOKEN:latest
+            GOOGLE_SERVICE_KEY=GCP_SERVICE_KEY:latest
+
+      # ── 6. Print the live URL ──────────────────────────────────────────────
+      - name: Show deployed URL
+        run: echo "🚀 Live at ${{ steps.deploy.outputs.url }}"
