@@ -89,6 +89,7 @@ jobs:
             COMMONS_PASSWORD=${{ secrets.COMMONS_DB_PASSWORD }}
             COMMONS_SSL_MODE=${{ secrets.COMMONS_DB_SSL_MODE }}
             EXIOBASE_HOST=${{ secrets.EXIOBASE_DB_HOST }}
+            EXIOBASE_PORT=${{ secrets.COMMONS_DB_PORT }}
             EXIOBASE_NAME=${{ secrets.EXIOBASE_DB_NAME }}
             EXIOBASE_USER=${{ secrets.EXIOBASE_DB_USER }}
             EXIOBASE_PASSWORD=${{ secrets.EXIOBASE_DB_PASSWORD }}
