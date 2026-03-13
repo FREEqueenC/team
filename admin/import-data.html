@@ -1125,7 +1125,7 @@
                 const headers = jsonData[0] || [];
                 const allDataRows = jsonData.slice(1); // All data rows
                 const limitedDataRows = allDataRows.slice(0, maxRecords); // Up to 5000 records
-                const previewDataRows = limitedDataRows.slice(0, 5); // Only 5 for display
+                const previewDataRows = limitedDataRows.slice(0, 20); // Show 20 for display
                 
                 // Create preview records (only first 5 for display)
                 const previewRecords = previewDataRows.map(row => {
@@ -2077,7 +2077,7 @@
             
             let html = `
                 <div class="alert alert-info">
-                    <strong>Preview:</strong> Showing first 5 data rows of ${totalRecords} total records`;
+                    <strong>Preview:</strong> Showing first 20 data rows of ${totalRecords} total records`;
             
             if (loadedRecords < totalRecords) {
                 html += ` (${loadedRecords} loaded into memory for analysis)`;
@@ -2087,7 +2087,7 @@
 
             if (data.preview && data.preview.length > 0) {
                 // Show appropriate number of rows based on whether headers are detected
-                const previewRows = data.preview.slice(0, 5);
+                const previewRows = data.preview.slice(0, 20);
                 
                 html += '<table class="preview-table">';
                 
