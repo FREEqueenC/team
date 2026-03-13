@@ -1,6 +1,6 @@
 {
   "googleSheets": {
-    "spreadsheetId": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+    "spreadsheetId": "1vRh5-bIR4hC1f9H3NtDCNT19hZXnqz8WRrBwTuLGnZiA5PWhFILUv2nS2FKE2TZ4dZ-RnJkZwHx1t2Y",
     "worksheetName": "Members",
     "columns": {
       "Timestamp": "A",
@@ -31,7 +31,7 @@
     "dataStartRow": 2
   },
   "oauth": {
-    "clientId": "REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID",
+    "clientId": "233706639439-sqmn233p4ldbcmkkq4qodjjcp8flmlfk.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/userinfo.profile",
