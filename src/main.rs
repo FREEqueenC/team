@@ -2452,6 +2452,10 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
         "DROP TABLE IF EXISTS contacts CASCADE",
         "DROP TABLE IF EXISTS accounts CASCADE",
         "DROP TABLE IF EXISTS users CASCADE",
+        "DROP TABLE IF EXISTS calls CASCADE",
+        "DROP TABLE IF EXISTS products CASCADE",
+        "DROP TABLE IF EXISTS events CASCADE",
+        "DROP TABLE IF EXISTS documents CASCADE",
     ];
 
     for query in drop_queries {
@@ -2519,10 +2523,11 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Create roles table
     sqlx::query(
         r#"
         CREATE TABLE roles (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            id VARCHAR(36) PRIMARY KEY,
             name VARCHAR(150),
             description TEXT,
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -2618,18 +2623,18 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create activities table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS activities (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        CREATE TABLE activities (
+            id VARCHAR(36) PRIMARY KEY,
             name VARCHAR(255),
             date_due TIMESTAMP WITH TIME ZONE,
             date_start TIMESTAMP WITH TIME ZONE,
             parent_type VARCHAR(255),
-            parent_id UUID,
+            parent_id VARCHAR(36),
             status VARCHAR(100),
             priority VARCHAR(255),
             description TEXT,
-            contact_id UUID REFERENCES contacts(id),
-            account_id UUID REFERENCES accounts(id),
+            contact_id VARCHAR(36) REFERENCES contacts(id),
+            account_id VARCHAR(36) REFERENCES accounts(id),
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36),
@@ -2643,8 +2648,8 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     // Create leads table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS leads (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        CREATE TABLE leads (
+            id VARCHAR(36) PRIMARY KEY,
             salutation VARCHAR(255),
             first_name VARCHAR(100),
             last_name VARCHAR(100),
@@ -2657,6 +2662,271 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             lead_source VARCHAR(100),
             description TEXT,
             converted BOOLEAN DEFAULT false,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create relationships
+    sqlx::query(
+        r#"
+        CREATE TABLE users_roles (
+            id VARCHAR(36) PRIMARY KEY,
+            user_id VARCHAR(36) REFERENCES users(id),
+            role_id VARCHAR(36) REFERENCES roles(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, role_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE accounts_contacts (
+            id VARCHAR(36) PRIMARY KEY,
+            account_id VARCHAR(36) REFERENCES accounts(id),
+            contact_id VARCHAR(36) REFERENCES contacts(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(account_id, contact_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create account opportunities relationship
+    sqlx::query(
+        r#"
+        CREATE TABLE accounts_opportunities (
+            id VARCHAR(36) PRIMARY KEY,
+            account_id VARCHAR(36) REFERENCES accounts(id),
+            opportunity_id VARCHAR(36) REFERENCES opportunities(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(account_id, opportunity_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create contact opportunities relationship
+    sqlx::query(
+        r#"
+        CREATE TABLE contacts_opportunities (
+            id VARCHAR(36) PRIMARY KEY,
+            contact_id VARCHAR(36) REFERENCES contacts(id),
+            opportunity_id VARCHAR(36) REFERENCES opportunities(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(contact_id, opportunity_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create campaign leads relationship
+    sqlx::query(
+        r#"
+        CREATE TABLE campaigns_leads (
+            id VARCHAR(36) PRIMARY KEY,
+            campaign_id VARCHAR(36) REFERENCES campaigns(id),
+            lead_id VARCHAR(36) REFERENCES leads(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(campaign_id, lead_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create project contacts relationship
+    sqlx::query(
+        r#"
+        CREATE TABLE projects_contacts (
+            id VARCHAR(36) PRIMARY KEY,
+            project_id VARCHAR(36) REFERENCES projects(id),
+            contact_id VARCHAR(36) REFERENCES contacts(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, contact_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create project accounts relationship
+    sqlx::query(
+        r#"
+        CREATE TABLE projects_accounts (
+            id VARCHAR(36) PRIMARY KEY,
+            project_id VARCHAR(36) REFERENCES projects(id),
+            account_id VARCHAR(36) REFERENCES accounts(id),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create surveyquestions table
+    sqlx::query(
+        r#"
+        CREATE TABLE surveyquestions (
+            id VARCHAR(36) PRIMARY KEY,
+            name TEXT,
+            question_type VARCHAR(100),
+            status VARCHAR(100),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create surveyquestionoptions table
+    sqlx::query(
+        r#"
+        CREATE TABLE surveyquestionoptions (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
+            survey_question_id VARCHAR(36) REFERENCES surveyquestions(id),
+            sort_order INTEGER,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create tags table
+    sqlx::query(
+        r#"
+        CREATE TABLE tags (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create taggables table
+    sqlx::query(
+        r#"
+        CREATE TABLE taggables (
+            id VARCHAR(36) PRIMARY KEY,
+            tag_id VARCHAR(36) REFERENCES tags(id),
+            taggable_type VARCHAR(100),
+            taggable_id VARCHAR(36),
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tag_id, taggable_type, taggable_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create calls table
+    sqlx::query(
+        r#"
+        CREATE TABLE calls (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(50),
+            date_start TIMESTAMP WITH TIME ZONE,
+            date_end TIMESTAMP WITH TIME ZONE,
+            duration_hours INTEGER,
+            duration_minutes INTEGER,
+            status VARCHAR(100),
+            direction VARCHAR(100),
+            parent_type VARCHAR(255),
+            parent_id VARCHAR(36),
+            contact_id VARCHAR(36) REFERENCES contacts(id),
+            account_id VARCHAR(36) REFERENCES accounts(id),
+            description TEXT,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create documents table
+    sqlx::query(
+        r#"
+        CREATE TABLE documents (
+            id VARCHAR(36) PRIMARY KEY,
+            document_name VARCHAR(255),
+            filename VARCHAR(255),
+            file_ext VARCHAR(100),
+            file_mime_type VARCHAR(100),
+            revision VARCHAR(100),
+            category_id VARCHAR(100),
+            subcategory_id VARCHAR(100),
+            status VARCHAR(100),
+            description TEXT,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create events table
+    sqlx::query(
+        r#"
+        CREATE TABLE events (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
+            date_start TIMESTAMP WITH TIME ZONE,
+            date_end TIMESTAMP WITH TIME ZONE,
+            duration_hours INTEGER,
+            duration_minutes INTEGER,
+            location VARCHAR(255),
+            description TEXT,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Create products table
+    sqlx::query(
+        r#"
+        CREATE TABLE products (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(50),
+            product_code VARCHAR(50),
+            category VARCHAR(100),
+            manufacturer VARCHAR(50),
+            cost DOUBLE PRECISION,
+            price DOUBLE PRECISION,
+            description TEXT,
             date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             created_by VARCHAR(36),
