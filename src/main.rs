@@ -2459,7 +2459,7 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     }
 
     println!("Creating tables...");
-    // Create users table
+    // 1. Independent parent tables
     sqlx::query(
         r#"
         CREATE TABLE users (
@@ -2478,7 +2478,6 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Create campaigns table
     sqlx::query(
         r#"
         CREATE TABLE campaigns (
@@ -2497,7 +2496,6 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Create accounts table
     sqlx::query(
         r#"
         CREATE TABLE accounts (
@@ -2521,7 +2519,23 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Create contacts table
+    sqlx::query(
+        r#"
+        CREATE TABLE roles (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(150),
+            description TEXT,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // 2. Tables that depend on parents
     sqlx::query(
         r#"
         CREATE TABLE contacts (
@@ -2531,7 +2545,7 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             last_name VARCHAR(100),
             title VARCHAR(100),
             department VARCHAR(255),
-            account_id VARCHAR(36),
+            account_id VARCHAR(36) REFERENCES accounts(id),
             phone_work VARCHAR(100),
             phone_mobile VARCHAR(100),
             email VARCHAR(100),
@@ -2552,7 +2566,34 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Create projects table
+    sqlx::query(
+        r#"
+        CREATE TABLE opportunities (
+            id VARCHAR(36) PRIMARY KEY,
+            name VARCHAR(255),
+            account_id VARCHAR(36) REFERENCES accounts(id),
+            opportunity_type VARCHAR(255),
+            campaign_id VARCHAR(36) REFERENCES campaigns(id),
+            lead_source VARCHAR(50),
+            amount DOUBLE PRECISION,
+            amount_usdollar DOUBLE PRECISION,
+            currency_id VARCHAR(36),
+            date_closed DATE,
+            next_step VARCHAR(100),
+            sales_stage VARCHAR(255),
+            probability DOUBLE PRECISION,
+            description TEXT,
+            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            created_by VARCHAR(36),
+            modified_user_id VARCHAR(36),
+            assigned_user_id VARCHAR(36)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         CREATE TABLE projects (
@@ -2568,31 +2609,6 @@ async fn init_database(pool: &Pool<Postgres>) -> anyhow::Result<()> {
             created_by VARCHAR(36),
             modified_user_id VARCHAR(36),
             assigned_user_id VARCHAR(36)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await?;
-
-    // Create opportunities table
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS opportunities (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name VARCHAR(50),
-            account_id UUID REFERENCES accounts(id),
-            opportunity_type VARCHAR(255),
-            lead_source VARCHAR(50),
-            amount DECIMAL(26,6),
-            currency_id VARCHAR(36),
-            date_closed DATE,
-            sales_stage VARCHAR(255),
-            probability DECIMAL(3,0),
-            description TEXT,
-            date_entered TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            date_modified TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            created_by VARCHAR(36),
-            modified_user_id VARCHAR(36)
         )
         "#,
     )
